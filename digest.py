@@ -1,0 +1,520 @@
+#!/usr/bin/env python3
+# AI/개발 뉴스 일일 요약 → 텔레그램
+# 사용: python3 digest.py        (텔레그램 전송)
+#       python3 digest.py --dry  (전송 없이 터미널 출력)
+import json
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from pathlib import Path
+
+FEEDS = {
+    "긱뉴스": "https://news.hada.io/rss/news",
+    "Hacker News": "https://hnrss.org/frontpage?points=100",
+    "TechCrunch AI": "https://techcrunch.com/category/artificial-intelligence/feed/",
+}
+LM_URL = "http://localhost:1234/v1/chat/completions"
+MODEL = "qwen3.6-27b"
+LMS = str(Path.home() / ".lmstudio/bin/lms")
+HOURS = 24
+MAX_ITEMS = 25
+ENV_PATH = Path(__file__).parent / ".env"
+
+
+def load_env():
+    if not ENV_PATH.exists():
+        return {}
+    return dict(
+        line.strip().split("=", 1)
+        for line in ENV_PATH.read_text().splitlines()
+        if "=" in line and not line.startswith("#")
+    )
+
+
+def fetch(url, timeout=30):
+    req = urllib.request.Request(
+        url,
+        headers={
+            # 일부 사이트(긱뉴스 등)가 봇 UA를 403 차단해서 브라우저 UA 사용
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        },
+    )
+    return urllib.request.urlopen(req, timeout=timeout).read()
+
+
+ATOM = "{http://www.w3.org/2005/Atom}"
+
+
+def parse_rss(name, xml_bytes, cutoff):
+    items = []
+    root = ET.fromstring(xml_bytes)
+    # RSS 2.0 (item/pubDate) 과 Atom (entry/updated) 둘 다 지원
+    entries = list(root.iter("item")) or list(root.iter(f"{ATOM}entry"))
+    for it in entries:
+        title = (it.findtext("title") or it.findtext(f"{ATOM}title") or "").strip()
+        link = (it.findtext("link") or "").strip()
+        if not link:
+            el = it.find(f"{ATOM}link")
+            link = el.get("href", "") if el is not None else ""
+        desc = (
+            it.findtext("description")
+            or it.findtext(f"{ATOM}summary")
+            or it.findtext(f"{ATOM}content")
+            or ""
+        ).strip()
+        pub = it.findtext("pubDate") or it.findtext(f"{ATOM}updated")
+        if not title or not pub:
+            continue
+        try:
+            dt = parsedate_to_datetime(pub) if "," in pub else datetime.fromisoformat(pub)
+        except (TypeError, ValueError):
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt < cutoff:
+            continue
+        # 설명에서 HTML 태그 대충 제거
+        import re
+        desc = re.sub(r"<[^>]+>", " ", desc)
+        desc = re.sub(r"\s+", " ", desc).strip()[:300]
+        items.append({"source": name, "title": title, "link": link, "desc": desc})
+    return items
+
+
+def collect():
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=HOURS)
+    items = []
+    for name, url in FEEDS.items():
+        try:
+            items.extend(parse_rss(name, fetch(url), cutoff)[: MAX_ITEMS // len(FEEDS)])
+        except Exception as e:
+            print(f"[warn] {name} 피드 실패: {e}", file=sys.stderr)
+    return items
+
+
+def ensure_model():
+    ps = subprocess.run([LMS, "ps"], capture_output=True, text=True).stdout
+    if MODEL not in ps:
+        subprocess.run([LMS, "server", "start"], capture_output=True)
+        subprocess.run(
+            [LMS, "load", MODEL, "-y", "--context-length", "16384"],
+            capture_output=True,
+            timeout=300,
+        )
+
+
+def llm(prompt, max_tokens=6000, schema=None):
+    payload = {
+        "model": MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0.3,
+    }
+    if schema:  # 답 형식을 JSON 스키마로 강제 (structured output)
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "out", "strict": True, "schema": schema},
+        }
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        LM_URL, data=body, headers={"Content-Type": "application/json"}
+    )
+    resp = json.load(urllib.request.urlopen(req, timeout=900))
+    return resp["choices"][0]["message"]["content"].strip()
+
+
+PICK_N = 5
+
+
+def pick(items):
+    import re
+
+    listing = "\n".join(
+        f"{i + 1}. [{it['source']}] {it['title']} — {it['desc'][:150]}"
+        for i, it in enumerate(items)
+    )
+    ans = llm(
+        f"""아래 AI/개발 뉴스 목록에서 개발자에게 가장 중요한 {PICK_N}개의 번호를 골라라.
+중복(같은 사건)·홍보성 글은 제외.
+{preference_block()}
+{listing}""",
+        3000,
+        schema={
+            "type": "object",
+            "properties": {
+                "picks": {"type": "array", "items": {"type": "integer"}}
+            },
+            "required": ["picks"],
+        },
+    )
+    nums = []
+    try:
+        raw = json.loads(ans)["picks"]
+    except (ValueError, KeyError, TypeError):
+        raw = [int(x) for x in re.findall(r"\d+", ans or "")]  # 스키마 실패 시 폴백
+    for n in raw:
+        if 1 <= n <= len(items) and n not in nums:
+            nums.append(n)
+    if not nums:  # 파싱 실패 시 앞에서부터
+        nums = list(range(1, PICK_N + 1))
+    return [items[n - 1] for n in nums[:PICK_N]]
+
+
+def article_text(url):
+    import html as html_module
+    import re
+
+    raw = None
+    # 1차: trafilatura (본문만 깔끔하게 추출, 광고·메뉴 제거)
+    try:
+        import trafilatura
+
+        raw = fetch(url).decode("utf-8", "ignore")
+        text = trafilatura.extract(raw)
+        if text:
+            return text[:2500]
+    except Exception:
+        pass
+    # 2차 폴백: <p> 태그 정규식
+    try:
+        if raw is None:
+            raw = fetch(url).decode("utf-8", "ignore")
+    except Exception:
+        return ""
+    paras = re.findall(r"<p[^>]*>(.*?)</p>", raw, re.S)
+    text = " ".join(re.sub(r"<[^>]+>", " ", p) for p in paras)
+    text = html_module.unescape(re.sub(r"\s+", " ", text)).strip()
+    return text[:2500]
+
+
+def summarize_article(item):
+    body = article_text(item["link"]) or item["desc"]
+    out = llm(
+        f"""다음 기사를 한국어 5줄로 요약하라.
+- 각 줄은 "- "로 시작, 한 문장씩.
+- 마지막 줄은 "왜 중요한지"로 마무리.
+- 다른 말·헤더·마크다운 금지. 딱 5줄만.
+
+제목: {item['title']}
+본문: {body}""",
+        6000,
+    )
+    # 생각 토큰이 한도를 다 먹어 빈 답이 오면 설명문으로 대체
+    return out or f"- {item['desc'][:200]}"
+
+
+def send_telegram(text, env, buttons=None):
+    token, chat_id = env["TELEGRAM_TOKEN"], env["TELEGRAM_CHAT_ID"]
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    # 텔레그램 메시지 한도 4096자 → 3500자 단위로 분할
+    chunks = [text[i : i + 3500] for i in range(0, len(text), 3500)]
+    for idx, chunk in enumerate(chunks):
+        params = {
+            "chat_id": chat_id,
+            "text": chunk,
+            "disable_web_page_preview": "true",
+        }
+        if buttons and idx == len(chunks) - 1:  # 버튼은 마지막 조각에만
+            params["reply_markup"] = json.dumps({"inline_keyboard": buttons})
+        data = urllib.parse.urlencode(params).encode()
+        urllib.request.urlopen(url, data=data, timeout=30)
+
+
+# ---- 피드백 수집 (👍👎 버튼 + 자유 답장) ----
+STATE_PATH = Path(__file__).parent / "state.json"
+RATINGS_PATH = Path(__file__).parent / "ratings.jsonl"
+SENTLOG_PATH = Path(__file__).parent / "sent-log.jsonl"
+
+
+def title_hash(title):
+    import hashlib
+
+    return hashlib.md5(title.encode()).hexdigest()[:10]
+
+
+def collect_feedback(env):
+    """어젯밤 이후 쌓인 버튼 클릭·답장을 ratings.jsonl에 저장."""
+    token = env["TELEGRAM_TOKEN"]
+    state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
+    offset = state.get("offset", 0)
+    sent = {}
+    if SENTLOG_PATH.exists():
+        for line in SENTLOG_PATH.read_text().splitlines():
+            e = json.loads(line)
+            sent[e["hash"]] = e["title"]
+    try:
+        resp = json.load(
+            urllib.request.urlopen(
+                f"https://api.telegram.org/bot{token}/getUpdates?offset={offset}",
+                timeout=30,
+            )
+        )
+    except Exception as e:
+        print(f"[warn] 피드백 수집 실패: {e}", file=sys.stderr)
+        return
+    from datetime import datetime as dt
+
+    count = 0
+    with RATINGS_PATH.open("a") as f:
+        for u in resp.get("result", []):
+            offset = u["update_id"] + 1
+            cq = u.get("callback_query")
+            if cq:
+                label, _, h = cq.get("data", "").partition(":")
+                if label in ("g", "b") and h in sent:
+                    f.write(
+                        json.dumps(
+                            {
+                                "ts": dt.now().isoformat(),
+                                "label": "good" if label == "g" else "bad",
+                                "title": sent[h],
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                    count += 1
+                # 버튼 로딩 표시 해제
+                try:
+                    urllib.request.urlopen(
+                        f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+                        data=urllib.parse.urlencode(
+                            {"callback_query_id": cq["id"], "text": "기록됨 ✅"}
+                        ).encode(),
+                        timeout=10,
+                    )
+                except Exception:
+                    pass
+            elif u.get("message", {}).get("text"):
+                m = u["message"]
+                reply = m.get("reply_to_message", {}).get("text", "")
+                if reply.startswith("📌"):
+                    # 기사에 대한 답장 = 단어장 요청
+                    lines = reply.splitlines()
+                    title = lines[0].lstrip("📌 ").strip()
+                    link = next(
+                        (l.lstrip("🔗 ").strip() for l in lines if l.startswith("🔗")),
+                        "",
+                    )
+                    f.write(
+                        json.dumps(
+                            {
+                                "ts": dt.now().isoformat(),
+                                "label": "vocab",
+                                "text": m["text"],
+                                "title": title,
+                                "link": link,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                else:
+                    f.write(
+                        json.dumps(
+                            {
+                                "ts": dt.now().isoformat(),
+                                "label": "note",
+                                "text": m["text"],
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                count += 1
+    STATE_PATH.write_text(json.dumps({"offset": offset}))
+    if count:
+        print(f"[info] 피드백 {count}건 수집", file=sys.stderr)
+
+
+# ---- 단어장: 기사 답장으로 남긴 단어를 옵시디언에 정리 ----
+# 직접 파일 쓰기는 launchd(자동 실행)에서 macOS가 Documents 접근을 막으므로,
+# 옵시디언 Local REST API(앱이 대신 씀)를 1순위로 쓰고 직접 쓰기는 폴백.
+VAULT_DIR = Path.home() / "Documents/Obsidian Vault"
+VOCAB_REL = "사이드프로젝트/daily-news/단어장"
+
+
+def _obsidian_request(method, relpath, data=None, content_type=None):
+    env = load_env()
+    url = env.get("OBSIDIAN_API", "http://127.0.0.1:27123") + "/vault/" + urllib.parse.quote(relpath)
+    headers = {"Authorization": "Bearer " + env.get("OBSIDIAN_KEY", "")}
+    if content_type:
+        headers["Content-Type"] = content_type
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    return urllib.request.urlopen(req, timeout=15)
+
+
+def vault_read(relpath):
+    try:
+        return _obsidian_request("GET", relpath).read().decode()
+    except Exception:
+        pass
+    try:
+        return (VAULT_DIR / relpath).read_text()
+    except Exception:
+        return None
+
+
+def vault_write(relpath, content):
+    try:
+        _obsidian_request("PUT", relpath, content.encode(), "text/markdown")
+        return True
+    except Exception:
+        pass
+    try:
+        p = VAULT_DIR / relpath
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+        return True
+    except Exception as e:
+        print(f"[warn] 볼트 저장 실패 ({relpath}): {e}", file=sys.stderr)
+        return False
+
+
+def process_vocab():
+    import re
+
+    if not RATINGS_PATH.exists():
+        return
+    for line in RATINGS_PATH.read_text().splitlines():
+        e = json.loads(line)
+        if e.get("label") != "vocab":
+            continue
+        words = [w.strip() for w in re.split(r"[,\n/]+", e["text"]) if w.strip()]
+        for word in words:
+            safe = re.sub(r'[\\/:*?"<>|]', "_", word)[:50]
+            relpath = f"{VOCAB_REL}/{safe}.md"
+            src = f"- [{e.get('title', '?')}]({e.get('link', '')}) — {e['ts'][:10]}"
+            existing = vault_read(relpath)
+            if existing is not None:
+                # 같은 단어를 다른 기사에서 또 물어보면 출처만 추가
+                if e.get("link") and e["link"] not in existing:
+                    vault_write(relpath, existing.rstrip() + "\n" + src + "\n")
+                continue
+            try:
+                expl = llm(
+                    f"""IT/개발 용어 '{word}'를 완전 초보에게 설명하라.
+- 3~5문장, 쉬운 비유 하나 포함.
+- 이 단어가 나온 뉴스 맥락: "{e.get('title', '')}"
+- 마크다운 헤더·다른 말 금지. 설명만.""",
+                    3000,
+                )
+            except Exception as ex:
+                print(f"[warn] 단어 설명 실패 ({word}): {ex}", file=sys.stderr)
+                continue
+            if not expl:
+                print(f"[warn] 단어 설명 빈 답 ({word}) — 다음 실행에서 재시도", file=sys.stderr)
+                continue
+            ok = vault_write(
+                relpath,
+                f"""---
+tags: [단어장, daily-news]
+created: {e['ts'][:10]}
+---
+
+# {word}
+
+{expl}
+
+## 출처
+{src}
+""",
+            )
+            if ok:
+                print(f"[info] 단어장 저장: {word}", file=sys.stderr)
+
+
+def preference_block():
+    """쌓인 피드백을 pick 프롬프트용 취향 예시로 변환."""
+    if not RATINGS_PATH.exists():
+        return ""
+    good, bad, notes = [], [], []
+    for line in RATINGS_PATH.read_text().splitlines():
+        e = json.loads(line)
+        if e["label"] == "good":
+            good.append(e["title"])
+        elif e["label"] == "bad":
+            bad.append(e["title"])
+        elif e["label"] == "note":
+            notes.append(e["text"])
+    parts = []
+    if good:
+        parts.append("사용자가 좋아한 기사: " + " / ".join(good[-15:]))
+    if bad:
+        parts.append("사용자가 싫어한 기사: " + " / ".join(bad[-15:]))
+    if notes:
+        parts.append("사용자 요청사항: " + " / ".join(notes[-10:]))
+    return ("\n이 사용자의 취향을 최우선으로 반영하라:\n" + "\n".join(parts) + "\n") if parts else ""
+
+
+def main():
+    dry = "--dry" in sys.argv
+    items = collect()
+    if not items:
+        print("지난 24시간 새 글 없음", file=sys.stderr)
+        return
+    ensure_model()
+    env = load_env()
+    if not dry and "TELEGRAM_TOKEN" not in env:
+        print("오류: .env에 TELEGRAM_TOKEN/TELEGRAM_CHAT_ID 필요", file=sys.stderr)
+        sys.exit(1)
+    if not dry:
+        # 피드백·단어장은 부가 기능 — 실패해도 다이제스트 발송은 계속돼야 함
+        try:
+            collect_feedback(env)  # 어제 이후 쌓인 👍👎·답장 반영
+        except Exception as e:
+            print(f"[warn] 피드백 수집 실패: {e}", file=sys.stderr)
+        try:
+            process_vocab()  # 기사 답장으로 남긴 단어 → 옵시디언 단어장
+        except Exception as e:
+            print(f"[warn] 단어장 처리 실패: {e}", file=sys.stderr)
+    picked = pick(items)
+    date = datetime.now().strftime("%m/%d")
+    if not dry:
+        send_telegram(f"🗞 AI/개발 다이제스트 {date} — 오늘 {len(picked)}건", env)
+    for it in picked:
+        try:
+            summary = summarize_article(it)
+        except Exception as e:
+            print(f"[warn] 요약 실패 ({it['title'][:30]}): {e}", file=sys.stderr)
+            summary = f"- {it['desc'][:200]}"
+        msg = f"📌 {it['title']}\n\n{summary}\n\n🔗 {it['link']}"
+        if dry:
+            print(msg, "\n" + "─" * 30)
+            continue
+        h = title_hash(it["title"])
+        with SENTLOG_PATH.open("a") as f:
+            f.write(json.dumps({"hash": h, "title": it["title"]}, ensure_ascii=False) + "\n")
+        send_telegram(
+            msg,
+            env,
+            buttons=[[
+                {"text": "👍 관심", "callback_data": f"g:{h}"},
+                {"text": "👎 별로", "callback_data": f"b:{h}"},
+            ]],
+        )
+    print(f"전송 완료 ({len(items)}건 중 {len(picked)}건 요약)")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        # 실패를 조용히 삼키지 않고 텔레그램으로 알림
+        import traceback
+
+        traceback.print_exc()
+        try:
+            env = load_env()
+            if "TELEGRAM_TOKEN" in env:
+                send_telegram(
+                    f"⚠️ daily-news 실행 실패\n{type(e).__name__}: {str(e)[:300]}\n로그: ~/news-digest/digest.log",
+                    env,
+                )
+        except Exception:
+            pass
+        sys.exit(1)

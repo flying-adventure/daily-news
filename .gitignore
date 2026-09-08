@@ -1,0 +1,14 @@
+# 비밀값 — 절대 커밋 금지
+.env
+
+# 개인 데이터
+ratings.jsonl
+sent-log.jsonl
+state.json
+labeling-candidates.jsonl
+
+# 로그·환경
+digest.log
+venv/
+__pycache__/
+.DS_Store
