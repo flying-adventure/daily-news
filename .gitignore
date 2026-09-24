@@ -4,6 +4,7 @@
 # 개인 데이터
 ratings.jsonl
 sent-log.jsonl
+subscribers.json
 state.json
 labeling-candidates.jsonl
 

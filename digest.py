@@ -207,8 +207,9 @@ def summarize_article(item):
     return out or f"- {item['desc'][:200]}"
 
 
-def send_telegram(text, env, buttons=None):
-    token, chat_id = env["TELEGRAM_TOKEN"], env["TELEGRAM_CHAT_ID"]
+def send_telegram(text, env, buttons=None, chat_id=None):
+    token = env["TELEGRAM_TOKEN"]
+    chat_id = chat_id if chat_id is not None else env["TELEGRAM_CHAT_ID"]
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     # 텔레그램 메시지 한도 4096자 → 3500자 단위로 분할
     chunks = [text[i : i + 3500] for i in range(0, len(text), 3500)]
@@ -231,6 +232,18 @@ def send_telegram(text, env, buttons=None):
 STATE_PATH = Path(__file__).parent / "state.json"
 RATINGS_PATH = Path(__file__).parent / "ratings.jsonl"
 SENTLOG_PATH = Path(__file__).parent / "sent-log.jsonl"
+SUBS_PATH = Path(__file__).parent / "subscribers.json"
+
+
+def load_subs(env):
+    """구독자 chat_id 목록. .env의 본인 채팅은 항상 포함."""
+    subs = set()
+    if SUBS_PATH.exists():
+        subs = {int(c) for c in json.loads(SUBS_PATH.read_text())}
+    own = env.get("TELEGRAM_CHAT_ID")
+    if own:
+        subs.add(int(own))
+    return subs
 
 
 def title_hash(title):
@@ -265,11 +278,23 @@ def collect_feedback(env):
         return
     from datetime import datetime as dt
 
+    subs_before = load_subs(env)
+    subs = set(subs_before)
     count = 0
     with RATINGS_PATH.open("a") as f:
         for u in resp.get("result", []):
             offset = u["update_id"] + 1
             cq = u.get("callback_query")
+            mr = u.get("message_reaction")
+            msg = u.get("message")
+            # 말을 건/반응한 채팅 = 구독자로 자동 등록 (피드백엔 누구 것인지 chat 기록)
+            chat_id = (
+                (cq or {}).get("message", {}).get("chat", {}).get("id")
+                or (mr or {}).get("chat", {}).get("id")
+                or (msg or {}).get("chat", {}).get("id")
+            )
+            if chat_id:
+                subs.add(chat_id)
             if cq:
                 label, _, h = cq.get("data", "").partition(":")
                 if label in ("g", "b") and h in sent:
@@ -279,6 +304,7 @@ def collect_feedback(env):
                                 "ts": dt.now().isoformat(),
                                 "label": "good" if label == "g" else "bad",
                                 "title": sent[h],
+                                "chat": chat_id,
                             },
                             ensure_ascii=False,
                         )
@@ -296,10 +322,9 @@ def collect_feedback(env):
                     )
                 except Exception:
                     pass
-            elif u.get("message_reaction"):
+            elif mr:
                 # 메시지 더블탭 리액션 👍/👎 — message_id로 기사 역추적
                 # (mid는 sent-log에 2026-09-24부터 기록 — 그 이전 기사는 매핑 불가)
-                mr = u["message_reaction"]
                 title = sent_mid.get(mr.get("message_id"))
                 emojis = {
                     r.get("emoji")
@@ -315,14 +340,17 @@ def collect_feedback(env):
                                 "label": label,
                                 "title": title,
                                 "via": "reaction",
+                                "chat": chat_id,
                             },
                             ensure_ascii=False,
                         )
                         + "\n"
                     )
                     count += 1
-            elif u.get("message", {}).get("text"):
-                m = u["message"]
+            elif msg and msg.get("text"):
+                m = msg
+                if m["text"].startswith("/"):
+                    continue  # /start 같은 명령어는 피드백 아님 — 요청사항으로 오염 방지
                 reply = m.get("reply_to_message", {}).get("text", "")
                 if reply.startswith("📌"):
                     # 기사에 대한 답장 = 단어장 요청
@@ -340,6 +368,7 @@ def collect_feedback(env):
                                 "text": m["text"],
                                 "title": title,
                                 "link": link,
+                                "chat": chat_id,
                             },
                             ensure_ascii=False,
                         )
@@ -352,6 +381,7 @@ def collect_feedback(env):
                                 "ts": dt.now().isoformat(),
                                 "label": "note",
                                 "text": m["text"],
+                                "chat": chat_id,
                             },
                             ensure_ascii=False,
                         )
@@ -361,6 +391,19 @@ def collect_feedback(env):
     STATE_PATH.write_text(json.dumps({"offset": offset}))
     if count:
         print(f"[info] 피드백 {count}건 수집", file=sys.stderr)
+    # 신규 구독자 등록 + 환영 메시지
+    if subs != subs_before:
+        SUBS_PATH.write_text(json.dumps(sorted(subs)))
+        for cid in subs - subs_before:
+            try:
+                send_telegram(
+                    "📰 구독 완료! 매일 아침 8시에 AI/개발 뉴스 요약을 보내드려요.",
+                    env,
+                    chat_id=cid,
+                )
+                print(f"[info] 신규 구독자: {cid}", file=sys.stderr)
+            except Exception:
+                pass
 
 
 # ---- 단어장: 기사 답장으로 남긴 단어를 옵시디언에 정리 ----
@@ -461,12 +504,16 @@ created: {e['ts'][:10]}
 
 
 def preference_block():
-    """쌓인 피드백을 pick 프롬프트용 취향 예시로 변환."""
+    """쌓인 피드백(본인 것만)을 pick 프롬프트용 취향 예시로 변환."""
     if not RATINGS_PATH.exists():
         return ""
+    own = load_env().get("TELEGRAM_CHAT_ID", "")
     good, bad, notes = [], [], []
     for line in RATINGS_PATH.read_text().splitlines():
         e = json.loads(line)
+        # chat 없는 예전 기록 = 본인 것. 다른 구독자 피드백은 내 취향 학습에서 제외
+        if e.get("chat") and str(e["chat"]) != own:
+            continue
         if e["label"] == "good":
             good.append(e["title"])
         elif e["label"] == "bad":
@@ -508,8 +555,13 @@ def main():
             print(f"[warn] 단어장 처리 실패: {e}", file=sys.stderr)
     picked = pick(items)
     date = datetime.now().strftime("%m/%d")
+    subs = load_subs(env)
     if not dry:
-        send_telegram(f"🗞 AI/개발 다이제스트 {date} — 오늘 {len(picked)}건", env)
+        for cid in subs:
+            try:
+                send_telegram(f"🗞 AI/개발 다이제스트 {date} — 오늘 {len(picked)}건", env, chat_id=cid)
+            except Exception as e:
+                print(f"[warn] 헤더 전송 실패 (chat {cid}): {e}", file=sys.stderr)
     for it in picked:
         try:
             summary = summarize_article(it)
@@ -521,18 +573,25 @@ def main():
             print(msg, "\n" + "─" * 30)
             continue
         h = title_hash(it["title"])
-        mid = send_telegram(
-            msg,
-            env,
-            buttons=[[
-                {"text": "👍 관심", "callback_data": f"g:{h}"},
-                {"text": "👎 별로", "callback_data": f"b:{h}"},
-            ]],
-        )
-        # mid = 이 메시지의 message_id. 리액션(👍 더블탭)이 어떤 기사에 달렸는지 역추적용
-        with SENTLOG_PATH.open("a") as f:
-            f.write(json.dumps({"hash": h, "title": it["title"], "mid": mid}, ensure_ascii=False) + "\n")
-    print(f"전송 완료 ({len(items)}건 중 {len(picked)}건 요약)")
+        buttons = [[
+            {"text": "👍 관심", "callback_data": f"g:{h}"},
+            {"text": "👎 별로", "callback_data": f"b:{h}"},
+        ]]
+        for cid in subs:
+            try:
+                mid = send_telegram(msg, env, buttons=buttons, chat_id=cid)
+            except Exception as e:
+                print(f"[warn] 기사 전송 실패 (chat {cid}): {e}", file=sys.stderr)
+                # 봇을 차단했거나 채팅이 사라진 구독자는 제외
+                if any(s in str(e) for s in ("403", "chat not found", "blocked")):
+                    subs.discard(cid)
+                continue
+            # mid = 구독자별 메시지의 message_id. 리액션(👍 더블탭) 역추적용
+            with SENTLOG_PATH.open("a") as f:
+                f.write(json.dumps({"hash": h, "title": it["title"], "mid": mid}, ensure_ascii=False) + "\n")
+    if not dry:
+        SUBS_PATH.write_text(json.dumps(sorted(subs)))
+    print(f"전송 완료 ({len(items)}건 중 {len(picked)}건 요약, 구독자 {len(subs)}명)")
 
 
 if __name__ == "__main__":
