@@ -113,6 +113,9 @@ def llm(prompt, max_tokens=6000, schema=None):
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": 0.3,
+        # 추론(thinking) 끄기 — 요약·선별 같은 간단한 작업에 추론 토큰 수천 개를 태우던 문제 해결
+        # (/no_think, chat_template_kwargs는 이 모델에서 안 먹힘. 이 파라미터만 유효)
+        "reasoning_effort": "none",
     }
     if schema:  # 답 형식을 JSON 스키마로 강제 (structured output)
         payload["response_format"] = {
@@ -196,7 +199,8 @@ def summarize_article(item):
     out = llm(
         f"""다음 기사를 한국어 5줄로 요약하라.
 - 각 줄은 "- "로 시작, 한 문장씩.
-- 마지막 줄은 "왜 중요한지"로 마무리.
+- 앞 4줄: 기사의 핵심 사실.
+- 마지막 줄: 이 뉴스가 중요한 이유를 한 문장으로 (문장을 완성할 것).
 - 다른 말·헤더·마크다운 금지. 딱 5줄만.
 
 제목: {item['title']}
