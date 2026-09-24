@@ -212,6 +212,7 @@ def send_telegram(text, env, buttons=None):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     # 텔레그램 메시지 한도 4096자 → 3500자 단위로 분할
     chunks = [text[i : i + 3500] for i in range(0, len(text), 3500)]
+    last_mid = None
     for idx, chunk in enumerate(chunks):
         params = {
             "chat_id": chat_id,
@@ -221,7 +222,9 @@ def send_telegram(text, env, buttons=None):
         if buttons and idx == len(chunks) - 1:  # 버튼은 마지막 조각에만
             params["reply_markup"] = json.dumps({"inline_keyboard": buttons})
         data = urllib.parse.urlencode(params).encode()
-        urllib.request.urlopen(url, data=data, timeout=30)
+        resp = json.load(urllib.request.urlopen(url, data=data, timeout=30))
+        last_mid = resp.get("result", {}).get("message_id")
+    return last_mid  # 버튼이 붙는 마지막 조각의 message_id — 리액션↔기사 매핑에 사용
 
 
 # ---- 피드백 수집 (👍👎 버튼 + 자유 답장) ----
@@ -237,19 +240,23 @@ def title_hash(title):
 
 
 def collect_feedback(env):
-    """어젯밤 이후 쌓인 버튼 클릭·답장을 ratings.jsonl에 저장."""
+    """어젯밤 이후 쌓인 버튼 클릭·리액션·답장을 ratings.jsonl에 저장."""
     token = env["TELEGRAM_TOKEN"]
     state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
     offset = state.get("offset", 0)
-    sent = {}
+    sent, sent_mid = {}, {}
     if SENTLOG_PATH.exists():
         for line in SENTLOG_PATH.read_text().splitlines():
             e = json.loads(line)
             sent[e["hash"]] = e["title"]
+            if "mid" in e:
+                sent_mid[e["mid"]] = e["title"]
+    # allowed_updates를 주면 그 타입만 옴 → 리액션 추가하되 기존 것도 전부 명시
+    allowed = urllib.parse.quote('["message","callback_query","message_reaction"]')
     try:
         resp = json.load(
             urllib.request.urlopen(
-                f"https://api.telegram.org/bot{token}/getUpdates?offset={offset}",
+                f"https://api.telegram.org/bot{token}/getUpdates?offset={offset}&allowed_updates={allowed}",
                 timeout=30,
             )
         )
@@ -289,6 +296,31 @@ def collect_feedback(env):
                     )
                 except Exception:
                     pass
+            elif u.get("message_reaction"):
+                # 메시지 더블탭 리액션 👍/👎 — message_id로 기사 역추적
+                # (mid는 sent-log에 2026-09-24부터 기록 — 그 이전 기사는 매핑 불가)
+                mr = u["message_reaction"]
+                title = sent_mid.get(mr.get("message_id"))
+                emojis = {
+                    r.get("emoji")
+                    for r in mr.get("new_reaction", [])
+                    if r.get("type") == "emoji"
+                }
+                label = "good" if "👍" in emojis else "bad" if "👎" in emojis else ""
+                if title and label:
+                    f.write(
+                        json.dumps(
+                            {
+                                "ts": dt.now().isoformat(),
+                                "label": label,
+                                "title": title,
+                                "via": "reaction",
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                    count += 1
             elif u.get("message", {}).get("text"):
                 m = u["message"]
                 reply = m.get("reply_to_message", {}).get("text", "")
@@ -453,21 +485,23 @@ def preference_block():
 
 def main():
     dry = "--dry" in sys.argv
+    env = load_env()
+    if not dry:
+        if "TELEGRAM_TOKEN" not in env:
+            print("오류: .env에 TELEGRAM_TOKEN/TELEGRAM_CHAT_ID 필요", file=sys.stderr)
+            sys.exit(1)
+        # 피드백 수집은 뉴스·모델과 무관하게 항상 실행 — 안 가져간 반응은 텔레그램이 ~24시간 뒤 폐기
+        try:
+            collect_feedback(env)  # 어제 이후 쌓인 👍👎·리액션·답장 반영
+        except Exception as e:
+            print(f"[warn] 피드백 수집 실패: {e}", file=sys.stderr)
     items = collect()
     if not items:
         print("지난 24시간 새 글 없음", file=sys.stderr)
         return
     ensure_model()
-    env = load_env()
-    if not dry and "TELEGRAM_TOKEN" not in env:
-        print("오류: .env에 TELEGRAM_TOKEN/TELEGRAM_CHAT_ID 필요", file=sys.stderr)
-        sys.exit(1)
     if not dry:
-        # 피드백·단어장은 부가 기능 — 실패해도 다이제스트 발송은 계속돼야 함
-        try:
-            collect_feedback(env)  # 어제 이후 쌓인 👍👎·답장 반영
-        except Exception as e:
-            print(f"[warn] 피드백 수집 실패: {e}", file=sys.stderr)
+        # 단어장은 부가 기능 — 실패해도 다이제스트 발송은 계속돼야 함
         try:
             process_vocab()  # 기사 답장으로 남긴 단어 → 옵시디언 단어장
         except Exception as e:
@@ -487,9 +521,7 @@ def main():
             print(msg, "\n" + "─" * 30)
             continue
         h = title_hash(it["title"])
-        with SENTLOG_PATH.open("a") as f:
-            f.write(json.dumps({"hash": h, "title": it["title"]}, ensure_ascii=False) + "\n")
-        send_telegram(
+        mid = send_telegram(
             msg,
             env,
             buttons=[[
@@ -497,6 +529,9 @@ def main():
                 {"text": "👎 별로", "callback_data": f"b:{h}"},
             ]],
         )
+        # mid = 이 메시지의 message_id. 리액션(👍 더블탭)이 어떤 기사에 달렸는지 역추적용
+        with SENTLOG_PATH.open("a") as f:
+            f.write(json.dumps({"hash": h, "title": it["title"], "mid": mid}, ensure_ascii=False) + "\n")
     print(f"전송 완료 ({len(items)}건 중 {len(picked)}건 요약)")
 
 
