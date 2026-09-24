@@ -397,7 +397,12 @@ def collect_feedback(env):
         for cid in subs - subs_before:
             try:
                 send_telegram(
-                    "📰 구독 완료! 매일 아침 8시에 AI/개발 뉴스 요약을 보내드려요.",
+                    """📰 dailyoscarnews 봇이에요
+
+매일 아침 8시, AI/개발 뉴스 중 중요한 것만 골라 한국어 5줄 요약으로 보내드려요.
+
+• 기사 밑 [👍 관심] [👎 별로] 버튼이나 메시지 더블탭 👍 리액션으로 취향을 기록할 수 있어요.
+• 기사에 모르는 단어가 나오면, 그 기사 메시지에 '답장'으로 단어만 적어주세요. 초보용 설명을 만들어 보내드려요.""",
                     env,
                     chat_id=cid,
                 )
@@ -469,6 +474,13 @@ def process_vocab():
                 # 같은 단어를 다른 기사에서 또 물어보면 출처만 추가
                 if e.get("link") and e["link"] not in existing:
                     vault_write(relpath, existing.rstrip() + "\n" + src + "\n")
+                # 이미 있는 단어도 물어본 사람에겐 기존 설명을 보내줌
+                body = existing.split(f"# {word}")[-1].split("## 출처")[0].strip()
+                if body and e.get("chat"):
+                    try:
+                        send_telegram(f"📖 {word}\n\n{body}", load_env(), chat_id=e["chat"])
+                    except Exception:
+                        pass
                 continue
             try:
                 expl = llm(
@@ -501,6 +513,12 @@ created: {e['ts'][:10]}
             )
             if ok:
                 print(f"[info] 단어장 저장: {word}", file=sys.stderr)
+                # 물어본 사람에게 설명을 답장으로 전송
+                if e.get("chat"):
+                    try:
+                        send_telegram(f"📖 {word}\n\n{expl}", load_env(), chat_id=e["chat"])
+                    except Exception:
+                        pass
 
 
 def preference_block():
