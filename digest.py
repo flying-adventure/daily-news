@@ -521,6 +521,26 @@ created: {e['ts'][:10]}
                         pass
 
 
+def vocab_pending():
+    """아직 노트가 안 만들어진 단어 요청이 있으면 True."""
+    import re
+
+    if not RATINGS_PATH.exists():
+        return False
+    for line in RATINGS_PATH.read_text().splitlines():
+        e = json.loads(line)
+        if e.get("label") != "vocab":
+            continue
+        for w in re.split(r"[,\n/]+", e["text"]):
+            w = w.strip()
+            if not w:
+                continue
+            safe = re.sub(r'[\\/:*?"<>|]', "_", w)[:50]
+            if vault_read(f"{VOCAB_REL}/{safe}.md") is None:
+                return True
+    return False
+
+
 def preference_block():
     """쌓인 피드백(본인 것만)을 pick 프롬프트용 취향 예시로 변환."""
     if not RATINGS_PATH.exists():
@@ -560,6 +580,15 @@ def main():
             collect_feedback(env)  # 어제 이후 쌓인 👍👎·리액션·답장 반영
         except Exception as e:
             print(f"[warn] 피드백 수집 실패: {e}", file=sys.stderr)
+    if "--feedback-only" in sys.argv:
+        # 다이제스트 없이 피드백·단어장만 처리하는 추가 실행용 (17시 잡)
+        if not dry and vocab_pending():
+            ensure_model()
+            try:
+                process_vocab()
+            except Exception as e:
+                print(f"[warn] 단어장 처리 실패: {e}", file=sys.stderr)
+        return
     items = collect()
     if not items:
         print("지난 24시간 새 글 없음", file=sys.stderr)
