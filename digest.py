@@ -130,10 +130,11 @@ def llm(prompt, max_tokens=6000, schema=None):
     return resp["choices"][0]["message"]["content"].strip()
 
 
-PICK_N = 5
+PICK_N = 5  # 취향 기반 4개 + 취향 밖 와일드카드 1개
 
 
 def pick(items):
+    import random
     import re
 
     listing = "\n".join(
@@ -141,30 +142,49 @@ def pick(items):
         for i, it in enumerate(items)
     )
     ans = llm(
-        f"""아래 AI/개발 뉴스 목록에서 개발자에게 가장 중요한 {PICK_N}개의 번호를 골라라.
+        f"""아래 AI/개발 뉴스 목록에서 개발자에게 가장 중요한 {PICK_N - 1}개의 번호를 "picks"에 골라라.
 중복(같은 사건)·홍보성 글은 제외.
 {preference_block()}
+추가로 "wildcard"에는 picks와 겹치지 않는 번호 하나를 골라라 — 이 사용자의 평소 취향과 다른 주제로,
+시야를 넓혀줄 만한 의외의 기사. 양질이되 취향 예시와 다른 분야일수록 좋다.
 {listing}""",
         3000,
         schema={
             "type": "object",
             "properties": {
-                "picks": {"type": "array", "items": {"type": "integer"}}
+                "picks": {"type": "array", "items": {"type": "integer"}},
+                "wildcard": {"type": "integer"},
             },
-            "required": ["picks"],
+            "required": ["picks", "wildcard"],
         },
     )
     nums = []
+    wild = None
     try:
-        raw = json.loads(ans)["picks"]
+        data = json.loads(ans)
+        raw = data["picks"]
+        wild = data.get("wildcard")
     except (ValueError, KeyError, TypeError):
         raw = [int(x) for x in re.findall(r"\d+", ans or "")]  # 스키마 실패 시 폴백
     for n in raw:
         if 1 <= n <= len(items) and n not in nums:
             nums.append(n)
+    nums = nums[: PICK_N - 1]
     if not nums:  # 파싱 실패 시 앞에서부터
-        nums = list(range(1, PICK_N + 1))
-    return [items[n - 1] for n in nums[:PICK_N]]
+        nums = list(range(1, min(PICK_N - 1, len(items)) + 1))
+    picked = [items[n - 1] for n in nums]
+    # 와일드카드: picks와 겹치지 않는 유효 번호면 그것, 아니면 남은 것 중 랜덤
+    if wild and 1 <= wild <= len(items) and wild not in nums:
+        w = items[wild - 1]
+    elif len(nums) < len(items):
+        pool = [it for i, it in enumerate(items) if (i + 1) not in nums]
+        w = random.choice(pool)
+    else:
+        w = None
+    if w:
+        w["wild"] = True
+        picked.append(w)
+    return picked
 
 
 def article_text(url):
@@ -356,10 +376,10 @@ def collect_feedback(env):
                 if m["text"].startswith("/"):
                     continue  # /start 같은 명령어는 피드백 아님 — 요청사항으로 오염 방지
                 reply = m.get("reply_to_message", {}).get("text", "")
-                if reply.startswith("📌"):
-                    # 기사에 대한 답장 = 단어장 요청
+                if reply.startswith(("📌", "🎲")):
+                    # 기사에 대한 답장 = 단어장 요청 (🎲은 취향 밖 와일드카드 기사)
                     lines = reply.splitlines()
-                    title = lines[0].lstrip("📌 ").strip()
+                    title = lines[0].lstrip("📌🎲 ").strip()
                     link = next(
                         (l.lstrip("🔗 ").strip() for l in lines if l.startswith("🔗")),
                         "",
@@ -619,7 +639,8 @@ def main():
         except Exception as e:
             print(f"[warn] 요약 실패 ({it['title'][:30]}): {e}", file=sys.stderr)
             summary = f"- {it['desc'][:200]}"
-        msg = f"📌 {it['title']}\n\n{summary}\n\n🔗 {it['link']}"
+        emoji = "🎲" if it.get("wild") else "📌"  # 와일드카드 = 취향 밖 기사 표시
+        msg = f"{emoji} {it['title']}\n\n{summary}\n\n🔗 {it['link']}"
         if dry:
             print(msg, "\n" + "─" * 30)
             continue
