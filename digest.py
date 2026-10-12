@@ -415,6 +415,8 @@ def collect_feedback(env):
     STATE_PATH.write_text(json.dumps({"offset": offset}))
     if count:
         print(f"[info] 피드백 {count}건 수집", file=sys.stderr)
+    # 같은 사람이 같은 기사에 여러 번 누른 것(연타/의견 변경)은 최신만 유지
+    dedupe_ratings()
     # 신규 구독자 등록 + 환영 메시지
     if subs != subs_before:
         SUBS_PATH.write_text(json.dumps(sorted(subs)))
@@ -543,6 +545,26 @@ created: {e['ts'][:10]}
                         send_telegram(f"📖 {word}\n\n{expl}", load_env(), chat_id=e["chat"])
                     except Exception:
                         pass
+
+
+def dedupe_ratings():
+    """ratings.jsonl에서 (사람, 기사) 단위로 good/bad 중복 제거 — 최신 것만 남김."""
+    if not RATINGS_PATH.exists():
+        return
+    lines = RATINGS_PATH.read_text().splitlines()
+    last = {}
+    for i, line in enumerate(lines):
+        e = json.loads(line)
+        if e.get("label") in ("good", "bad"):
+            last[(e.get("chat"), e["title"])] = i  # 같은 키면 나중 인덱스로 덮어씀
+    keep = [
+        line
+        for i, line in enumerate(lines)
+        if json.loads(line).get("label") not in ("good", "bad")
+        or last[(json.loads(line).get("chat"), json.loads(line)["title"])] == i
+    ]
+    if len(keep) != len(lines):
+        RATINGS_PATH.write_text("\n".join(keep) + "\n")
 
 
 def vocab_pending():
