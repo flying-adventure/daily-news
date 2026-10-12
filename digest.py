@@ -568,6 +568,74 @@ def dedupe_ratings():
         RATINGS_PATH.write_text("\n".join(keep) + "\n")
 
 
+def tags_pending():
+    """태그가 안 달린 good/bad 피드백이 있으면 True."""
+    if not RATINGS_PATH.exists():
+        return False
+    for line in RATINGS_PATH.read_text().splitlines():
+        e = json.loads(line)
+        if e.get("label") in ("good", "bad") and e.get("title") and "tags" not in e:
+            return True
+    return False
+
+
+def tag_pending_ratings():
+    """good/bad 피드백의 기사에 주제 태그를 달아 취향을 주제 단위로 집계 가능하게 함."""
+    if not RATINGS_PATH.exists():
+        return
+    entries = [json.loads(l) for l in RATINGS_PATH.read_text().splitlines()]
+    pending = [
+        i
+        for i, e in enumerate(entries)
+        if e.get("label") in ("good", "bad") and e.get("title") and "tags" not in e
+    ]
+    if not pending:
+        return
+    titles = [entries[i]["title"] for i in pending]
+    listing = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(titles))
+    try:
+        ans = llm(
+            f"""각 기사 제목의 주제를 나타내는 태그를 2~4개씩 뽑아라.
+- 태그는 짧은 명사형 한국어 (예: AI업계, 오픈소스, 보안, 프레임워크, 하드웨어, 스타트업).
+- 여러 기사가 같은 주제면 반드시 같은 태그를 써라 — 집계에 쓴다.
+- items에는 번호 n과 tags만.
+{listing}""",
+            4000,
+            schema={
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "n": {"type": "integer"},
+                                "tags": {"type": "array", "items": {"type": "string"}},
+                            },
+                            "required": ["n", "tags"],
+                        },
+                    }
+                },
+                "required": ["items"],
+            },
+        )
+        mapping = {it["n"]: it["tags"] for it in json.loads(ans).get("items", [])}
+    except Exception as ex:
+        print(f"[warn] 태그 추출 실패: {ex}", file=sys.stderr)
+        return
+    n = 0
+    for pos, i in enumerate(pending):
+        tags = mapping.get(pos + 1)
+        if tags:
+            entries[i]["tags"] = tags
+            n += 1
+    if n:
+        RATINGS_PATH.write_text(
+            "\n".join(json.dumps(e, ensure_ascii=False) for e in entries) + "\n"
+        )
+        print(f"[info] 피드백 {n}건에 태그 부여", file=sys.stderr)
+
+
 def vocab_pending():
     """아직 노트가 안 만들어진 단어 요청이 있으면 True."""
     import re
@@ -589,12 +657,16 @@ def vocab_pending():
 
 
 def preference_block(chat_id=None):
-    """쌓인 피드백을 pick 프롬프트용 취향 예시로 변환. chat_id별로 그 사람 것만."""
+    """쌓인 피드백을 pick 프롬프트용 취향 블록으로 변환. chat_id별로 그 사람 것만.
+    주제 태그 카운트(장기 취향) + 최근 제목(단기 취향) 둘 다 준다."""
     if not RATINGS_PATH.exists():
         return ""
+    from collections import Counter
+
     own = load_env().get("TELEGRAM_CHAT_ID", "")
     cid = str(chat_id) if chat_id is not None else own
     good, bad, notes = [], [], []
+    good_tags, bad_tags = Counter(), Counter()
     for line in RATINGS_PATH.read_text().splitlines():
         e = json.loads(line)
         # chat 없는 예전 기록 = 본인 것. 다른 사람 피드백은 이 사람 취향에 안 섞임
@@ -603,15 +675,25 @@ def preference_block(chat_id=None):
             continue
         if e["label"] == "good":
             good.append(e["title"])
+            good_tags.update(e.get("tags", []))
         elif e["label"] == "bad":
             bad.append(e["title"])
+            bad_tags.update(e.get("tags", []))
         elif e["label"] == "note":
             notes.append(e["text"])
     parts = []
+    if good_tags:
+        parts.append(
+            "좋아하는 주제: " + ", ".join(f"{t}({n})" for t, n in good_tags.most_common(8))
+        )
+    if bad_tags:
+        parts.append(
+            "싫어하는 주제: " + ", ".join(f"{t}({n})" for t, n in bad_tags.most_common(8))
+        )
     if good:
-        parts.append("사용자가 좋아한 기사: " + " / ".join(good[-15:]))
+        parts.append("최근 좋아한 기사: " + " / ".join(good[-5:]))
     if bad:
-        parts.append("사용자가 싫어한 기사: " + " / ".join(bad[-15:]))
+        parts.append("최근 싫어한 기사: " + " / ".join(bad[-5:]))
     if notes:
         parts.append("사용자 요청사항: " + " / ".join(notes[-10:]))
     return ("\n이 사용자의 취향을 최우선으로 반영하라:\n" + "\n".join(parts) + "\n") if parts else ""
@@ -630,13 +712,17 @@ def main():
         except Exception as e:
             print(f"[warn] 피드백 수집 실패: {e}", file=sys.stderr)
     if "--feedback-only" in sys.argv:
-        # 다이제스트 없이 피드백·단어장만 처리하는 추가 실행용 (17시 잡)
-        if not dry and vocab_pending():
+        # 다이제스트 없이 피드백·단어장·태그만 처리하는 추가 실행용 (5분 주기 잡)
+        if not dry and (vocab_pending() or tags_pending()):
             ensure_model()
             try:
                 process_vocab()
             except Exception as e:
                 print(f"[warn] 단어장 처리 실패: {e}", file=sys.stderr)
+            try:
+                tag_pending_ratings()
+            except Exception as e:
+                print(f"[warn] 태그 부여 실패: {e}", file=sys.stderr)
         return
     items = collect()
     if not items:
@@ -649,6 +735,10 @@ def main():
             process_vocab()  # 기사 답장으로 남긴 단어 → 옵시디언 단어장
         except Exception as e:
             print(f"[warn] 단어장 처리 실패: {e}", file=sys.stderr)
+        try:
+            tag_pending_ratings()  # 피드백 기사에 주제 태그 부여 → 취향 주제 집계
+        except Exception as e:
+            print(f"[warn] 태그 부여 실패: {e}", file=sys.stderr)
     date = datetime.now().strftime("%m/%d")
     if dry:
         # 터미널 테스트는 본인 취향 한 세트만 출력
