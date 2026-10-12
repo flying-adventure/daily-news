@@ -338,12 +338,32 @@ def collect_feedback(env):
                         + "\n"
                     )
                     count += 1
+                elif label == "s" and h in sent:
+                    # 🔖 저장 버튼 = 나중에 읽기 북마크 → 저장함 페이지에 표시
+                    f.write(
+                        json.dumps(
+                            {
+                                "ts": dt.now().isoformat(),
+                                "label": "bookmark",
+                                "title": sent[h]["title"],
+                                "link": sent[h].get("link", ""),
+                                "one": sent[h].get("one", ""),
+                                "chat": chat_id,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                    count += 1
                 # 버튼 로딩 표시 해제
                 try:
                     urllib.request.urlopen(
                         f"https://api.telegram.org/bot{token}/answerCallbackQuery",
                         data=urllib.parse.urlencode(
-                            {"callback_query_id": cq["id"], "text": "기록됨 ✅"}
+                            {
+                                "callback_query_id": cq["id"],
+                                "text": "저장됨 🔖" if label == "s" else "기록됨 ✅",
+                            }
                         ).encode(),
                         timeout=10,
                     )
@@ -421,7 +441,8 @@ def collect_feedback(env):
                         + "\n"
                     )
                 count += 1
-    STATE_PATH.write_text(json.dumps({"offset": offset}))
+    state["offset"] = offset  # 다른 키(site_hash 등)는 보존
+    STATE_PATH.write_text(json.dumps(state))
     if count:
         print(f"[info] 피드백 {count}건 수집", file=sys.stderr)
     # 같은 사람이 같은 기사에 여러 번 누른 것(연타/의견 변경)은 최신만 유지
