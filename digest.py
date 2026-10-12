@@ -3,6 +3,7 @@
 # 사용: python3 digest.py        (텔레그램 전송)
 #       python3 digest.py --dry  (전송 없이 터미널 출력)
 import json
+import os
 import subprocess
 import sys
 import urllib.parse
@@ -891,6 +892,50 @@ def build_site():
     return h.hexdigest()
 
 
+def publish(env, dry=False):
+    """저장함 사이트를 만들고, 지난 업로드 이후 바뀌었으면 Cloudflare Pages에 올린다.
+    부가 기능이라 절대 예외를 밖으로 내지 않음. 실패하면 다음 실행에서 자동 재시도."""
+    if not site_url(env):
+        return
+    try:
+        if dry and env.get("TELEGRAM_CHAT_ID"):
+            get_token(env["TELEGRAM_CHAT_ID"])  # 미리보기용 본인 페이지
+        site_hash = build_site()
+        state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
+        if dry or state.get("site_hash") == site_hash:
+            return
+        npx = env.get("NPX", "npx")
+        run_env = dict(
+            os.environ,
+            CLOUDFLARE_API_TOKEN=env.get("CLOUDFLARE_API_TOKEN", ""),
+            CLOUDFLARE_ACCOUNT_ID=env.get("CLOUDFLARE_ACCOUNT_ID", ""),
+            WRANGLER_SEND_METRICS="false",
+        )
+        if "/" in npx:
+            # launchd는 PATH가 짧아 node를 못 찾음 → npx가 있는 폴더를 앞에 붙임
+            run_env["PATH"] = str(Path(npx).parent) + ":" + run_env.get("PATH", "")
+        r = subprocess.run(
+            [
+                npx, "--yes", "wrangler@4", "pages", "deploy", str(SITE_DIR),
+                "--project-name", env.get("PAGES_PROJECT", "daily-news"),
+                "--branch", "main", "--commit-dirty=true",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=run_env,
+            cwd=str(Path(__file__).parent),  # launchd 기본 작업 폴더는 / — wrangler 임시 파일이 쓰기 실패하지 않게
+        )
+        if r.returncode != 0:
+            print(f"[warn] 저장함 업로드 실패: {(r.stderr or r.stdout)[-300:]}", file=sys.stderr)
+            return
+        state["site_hash"] = site_hash
+        STATE_PATH.write_text(json.dumps(state))
+        print("[info] 저장함 업로드 완료", file=sys.stderr)
+    except Exception as e:
+        print(f"[warn] 저장함 업로드 실패: {e}", file=sys.stderr)
+
+
 def main():
     dry = "--dry" in sys.argv
     env = load_env()
@@ -923,6 +968,7 @@ def main():
                 tag_pending_ratings()
             except Exception as e:
                 print(f"[warn] 태그 부여 실패: {e}", file=sys.stderr)
+        publish(env, dry)  # 🔖 저장이 들어왔으면 저장함 페이지 갱신
         return
     items = collect()
     if not items:
@@ -950,6 +996,7 @@ def main():
                 summary = f"- {it['desc'][:200]}"
             emoji = "🎲" if it.get("wild") else "📌"
             print(f"{emoji} {it['title']}\n\n{summary}\n\n🔗 {it['link']}", "\n" + "─" * 30)
+        publish(env, dry=True)  # 업로드 없이 site/에 본인 저장함 미리보기 생성
         return
     subs = load_subs(env)
     site = site_url(env)  # 비어 있으면 🔖 저장·📚 저장함 기능 꺼짐
@@ -1010,6 +1057,7 @@ def main():
                     + "\n"
                 )
     SUBS_PATH.write_text(json.dumps(sorted(subs)))
+    publish(env)  # 새 구독자 토큰이 생겼으면 저장함 페이지 갱신
     print(f"전송 완료 ({len(items)}건, 구독자 {len(subs)}명)")
 
 

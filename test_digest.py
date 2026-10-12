@@ -169,11 +169,11 @@ def test_token_is_stable_and_different_per_person():
 
 
 def run_digest(site_url):
-    """가짜 기사 1건으로 다이제스트 발송을 돌리고 보낸 메시지 목록을 돌려준다."""
+    """가짜 기사 1건으로 다이제스트 발송을 돌리고 (보낸 메시지들, publish 호출 기록)을 돌려준다."""
     if site_url is not None:
         digest.ENV_PATH.write_text(f"TELEGRAM_TOKEN=x\nTELEGRAM_CHAT_ID=111\nSITE_URL={site_url}\n")
     item = {"source": "HN", "title": "기사", "link": "https://ex.com/1", "desc": "d"}
-    sent = []
+    sent, published = [], []
 
     def fake_send(text, env, buttons=None, chat_id=None):
         sent.append((text, buttons, chat_id))
@@ -189,26 +189,28 @@ def run_digest(site_url):
         summarize_article=lambda it, body=None: "- 사실",
         one_liner=lambda it, summary: "한줄",
         send_telegram=fake_send,
+        publish=lambda env, dry=False: published.append(dry),
     )
     digest.main()
-    return sent
+    return sent, published
 
 
 def test_digest_adds_save_button_and_my_page_link():
     setup()
-    sent = run_digest("https://news.example.com/")
+    sent, published = run_digest("https://news.example.com/")
     (_, header_buttons, _), (_, article_buttons, _) = sent
     token = json.loads(digest.TOKENS_PATH.read_text())["111"]
     assert header_buttons == [[{"text": "📚 내 저장함", "url": f"https://news.example.com/u/{token}/"}]]
     assert {"text": "🔖 저장", "callback_data": "s:" + digest.title_hash("기사")} in article_buttons[0]
     log = read_jsonl(digest.SENTLOG_PATH)[-1]
     assert (log["link"], log["one"], log["mid"]) == ("https://ex.com/1", "한줄", 77), log
+    assert published == [False]
 
 
 def test_digest_without_valid_site_url_still_sends():
     for bad in (None, "news.example.com"):  # 없음 / https:// 빠짐
         setup()
-        sent = run_digest(bad)
+        sent, _ = run_digest(bad)
         (_, header_buttons, _), (_, article_buttons, _) = sent
         assert header_buttons is None, header_buttons
         assert all(b["text"] != "🔖 저장" for b in article_buttons[0]), article_buttons
@@ -249,6 +251,76 @@ def test_build_site_one_private_page_per_person():
     digest.TOKENS_PATH.write_text(json.dumps({"111": me}))  # 친구 토큰 폐기
     assert digest.build_site() != h1
     assert not (digest.SITE_DIR / f"u/{friend}").exists()  # 옛 주소 페이지는 사라짐
+
+
+# ---- Task 5: 업로드 ----
+
+ENV = {
+    "SITE_URL": "https://news.example.com",
+    "TELEGRAM_CHAT_ID": "111",
+    "CLOUDFLARE_API_TOKEN": "t",
+    "CLOUDFLARE_ACCOUNT_ID": "a",
+    "NPX": "/opt/node/bin/npx",
+}
+
+
+class Done:
+    def __init__(self, code):
+        self.returncode, self.stdout, self.stderr = code, "", "boom"
+
+
+def test_publish_uploads_only_changes_and_retries_failures():
+    setup()
+    digest.get_token(111)
+    runs, codes = [], [1, 0]
+
+    def fake_run(cmd, **kw):
+        runs.append((cmd, kw["env"]))
+        return Done(codes.pop(0))
+
+    subprocess.run = fake_run
+    digest.publish(ENV)  # 1차: 업로드 실패 → 해시 저장 안 함
+    assert not digest.STATE_PATH.exists()
+    digest.publish(ENV)  # 2차: 재시도 성공 → 해시 저장
+    digest.publish(ENV)  # 3차: 바뀐 게 없음 → 업로드 생략
+    assert len(runs) == 2, runs
+    cmd, run_env = runs[1]
+    assert cmd[:5] == ["/opt/node/bin/npx", "--yes", "wrangler@4", "pages", "deploy"], cmd
+    assert run_env["CLOUDFLARE_API_TOKEN"] == "t" and run_env["CLOUDFLARE_ACCOUNT_ID"] == "a"
+    assert run_env["PATH"].startswith("/opt/node/bin:"), run_env["PATH"]
+    assert json.loads(digest.STATE_PATH.read_text())["site_hash"]
+    digest.publish({**ENV, "SITE_URL": ""})  # 기능 꺼짐
+    assert len(runs) == 2
+
+
+def test_publish_never_raises():
+    setup()
+    digest.get_token(111)
+
+    def hang(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 180)
+
+    subprocess.run = hang
+    digest.publish(ENV)  # 예외가 밖으로 새면 다이제스트·피드백이 같이 죽음
+    assert not digest.STATE_PATH.exists()
+
+
+def test_dry_run_builds_own_preview_without_upload():
+    setup()
+    digest.publish(ENV, dry=True)
+    token = json.loads(digest.TOKENS_PATH.read_text())["111"]
+    assert (digest.SITE_DIR / f"u/{token}/index.html").exists()
+    assert EXTERNAL == []
+
+
+def test_feedback_only_run_publishes():
+    setup()
+    published = []
+    urllib.request.urlopen = fake_telegram([], [])
+    patch(publish=lambda env, dry=False: published.append(dry))
+    sys.argv = ["digest.py", "--feedback-only"]
+    digest.main()
+    assert published == [False], published
 
 
 if __name__ == "__main__":
