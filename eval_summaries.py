@@ -71,14 +71,18 @@ def judge(article, summary):
     return json.loads(ans)
 
 
-def run():
+def run(model=None):
     entries = [json.loads(l) for l in SET_PATH.read_text().splitlines()]
     digest.ensure_model()
+    orig_model = digest.MODEL
     results = []
     for i, e in enumerate(entries, 1):
         it = {"title": e["title"], "link": e["link"], "desc": e["desc"]}
         t0 = time.time()
+        if model:
+            digest.MODEL = model  # 요약만 비교 대상 모델로
         summary = digest.summarize_article(it, body=e["body"])  # 저장된 본문으로 (재현성)
+        digest.MODEL = orig_model  # 채점은 항상 같은 모델로 — 공정 비교
         secs = round(time.time() - t0, 1)
         scores = judge(e, summary)
         results.append({"title": e["title"][:50], "secs": secs, "summary": summary, **scores})
@@ -95,7 +99,7 @@ def run():
           f"coverage {means['coverage']}  korean {means['korean']}  | 총 {total_sec}s")
     with RESULTS_PATH.open("a") as f:
         f.write(json.dumps(
-            {"ts": datetime.now().isoformat(), "n": len(results),
+            {"ts": datetime.now().isoformat(), "n": len(results), "model": model or digest.MODEL,
              "mean": means, "total_sec": total_sec, "detail": results},
             ensure_ascii=False) + "\n")
     print(f"결과 축적: {RESULTS_PATH}")
@@ -105,6 +109,7 @@ if __name__ == "__main__":
     if "build" in sys.argv:
         build()
     elif "run" in sys.argv:
-        run()
+        mi = sys.argv.index("--model") + 1 if "--model" in sys.argv else 0
+        run(model=sys.argv[mi] if mi else None)
     else:
         print(__doc__)
