@@ -286,9 +286,9 @@ def collect_feedback(env):
     if SENTLOG_PATH.exists():
         for line in SENTLOG_PATH.read_text().splitlines():
             e = json.loads(line)
-            sent[e["hash"]] = e["title"]
+            sent[e["hash"]] = e
             if "mid" in e:
-                sent_mid[e["mid"]] = e["title"]
+                sent_mid[e["mid"]] = e
     # allowed_updates를 주면 그 타입만 옴 → 리액션 추가하되 기존 것도 전부 명시
     allowed = urllib.parse.quote('["message","callback_query","message_reaction"]')
     try:
@@ -328,7 +328,8 @@ def collect_feedback(env):
                             {
                                 "ts": dt.now().isoformat(),
                                 "label": "good" if label == "g" else "bad",
-                                "title": sent[h],
+                                "title": sent[h]["title"],
+                                "link": sent[h].get("link", ""),
                                 "chat": chat_id,
                             },
                             ensure_ascii=False,
@@ -348,22 +349,28 @@ def collect_feedback(env):
                 except Exception:
                     pass
             elif mr:
-                # 메시지 더블탭 리액션 👍/👎 — message_id로 기사 역추적
+                # 메시지 리액션 👍/👎/⭐ — message_id로 기사 역추적
                 # (mid는 sent-log에 2026-09-24부터 기록 — 그 이전 기사는 매핑 불가)
-                title = sent_mid.get(mr.get("message_id"))
+                entry = sent_mid.get(mr.get("message_id"))
                 emojis = {
                     r.get("emoji")
                     for r in mr.get("new_reaction", [])
                     if r.get("type") == "emoji"
                 }
-                label = "good" if "👍" in emojis else "bad" if "👎" in emojis else ""
-                if title and label:
+                label = (
+                    "good" if "👍" in emojis
+                    else "bad" if "👎" in emojis
+                    else "bookmark" if "⭐" in emojis  # ⭐ = 나중에 읽기
+                    else ""
+                )
+                if entry and label:
                     f.write(
                         json.dumps(
                             {
                                 "ts": dt.now().isoformat(),
                                 "label": label,
-                                "title": title,
+                                "title": entry["title"],
+                                "link": entry.get("link", ""),
                                 "via": "reaction",
                                 "chat": chat_id,
                             },
@@ -548,6 +555,57 @@ created: {e['ts'][:10]}
                         pass
 
 
+WEEKLY_PATH = Path(__file__).parent / "weekly.json"
+
+
+def send_weekly_report(env):
+    """일요일: 지난 7일 피드백·북마크를 사람별로 요약 발송. 하루 1번만."""
+    from collections import Counter, defaultdict
+
+    state = json.loads(WEEKLY_PATH.read_text()) if WEEKLY_PATH.exists() else {}
+    today = datetime.now().strftime("%Y-%m-%d")
+    if state.get("last") == today or not RATINGS_PATH.exists():
+        return
+    own = int(env.get("TELEGRAM_CHAT_ID", "0"))
+    cutoff = datetime.now() - timedelta(days=7)
+    per = defaultdict(lambda: {"good": 0, "bad": 0, "gt": Counter(), "bt": Counter(), "bm": []})
+    for line in RATINGS_PATH.read_text().splitlines():
+        e = json.loads(line)
+        try:
+            if datetime.fromisoformat(e["ts"]) < cutoff:
+                continue
+        except (KeyError, ValueError):
+            continue
+        cid = e.get("chat") or own  # 예전 기록 = 본인 것
+        p = per[cid]
+        if e["label"] == "good":
+            p["good"] += 1
+            p["gt"].update(e.get("tags", []))
+        elif e["label"] == "bad":
+            p["bad"] += 1
+            p["bt"].update(e.get("tags", []))
+        elif e["label"] == "bookmark":
+            p["bm"].append((e["title"], e.get("link", "")))
+    for cid, p in per.items():
+        if not (p["good"] or p["bad"] or p["bm"]):
+            continue
+        lines = ["📊 이번 주 뉴스 리포트", ""]
+        if p["good"]:
+            tops = ", ".join(t for t, _ in p["gt"].most_common(5))
+            lines.append(f"👍 {p['good']}건" + (f" — 좋아한 주제: {tops}" if tops else ""))
+        if p["bad"]:
+            tops = ", ".join(t for t, _ in p["bt"].most_common(5))
+            lines.append(f"👎 {p['bad']}건" + (f" — 싫어한 주제: {tops}" if tops else ""))
+        if p["bm"]:
+            lines += ["", "⭐ 이번 주 북마크:"]
+            lines += [f"• {t} {l}".rstrip() for t, l in p["bm"]]
+        try:
+            send_telegram("\n".join(lines), env, chat_id=cid)
+        except Exception as ex:
+            print(f"[warn] 주간 리포트 실패 (chat {cid}): {ex}", file=sys.stderr)
+    WEEKLY_PATH.write_text(json.dumps({"last": today}))
+
+
 def dedupe_ratings():
     """ratings.jsonl에서 (사람, 기사) 단위로 good/bad 중복 제거 — 최신 것만 남김."""
     if not RATINGS_PATH.exists():
@@ -712,6 +770,14 @@ def main():
         except Exception as e:
             print(f"[warn] 피드백 수집 실패: {e}", file=sys.stderr)
     if "--feedback-only" in sys.argv:
+        # 일요일 9시 이후 첫 실행 때 주간 리포트 발송
+        if not dry:
+            now = datetime.now()
+            if now.weekday() == 6 and now.hour >= 9:
+                try:
+                    send_weekly_report(env)
+                except Exception as e:
+                    print(f"[warn] 주간 리포트 실패: {e}", file=sys.stderr)
         # 다이제스트 없이 피드백·단어장·태그만 처리하는 추가 실행용 (5분 주기 잡)
         if not dry and (vocab_pending() or tags_pending()):
             ensure_model()
@@ -786,9 +852,9 @@ def main():
                 if any(s in str(e) for s in ("403", "chat not found", "blocked")):
                     subs.discard(cid)
                 continue
-            # mid = 구독자별 메시지의 message_id. 리액션(👍 더블탭) 역추적용
+            # mid = 구독자별 메시지의 message_id. 리액션(👍/⭐ 더블탭) 역추적용
             with SENTLOG_PATH.open("a") as f:
-                f.write(json.dumps({"hash": h, "title": it["title"], "mid": mid}, ensure_ascii=False) + "\n")
+                f.write(json.dumps({"hash": h, "title": it["title"], "link": it["link"], "mid": mid}, ensure_ascii=False) + "\n")
     SUBS_PATH.write_text(json.dumps(sorted(subs)))
     print(f"전송 완료 ({len(items)}건, 구독자 {len(subs)}명)")
 
