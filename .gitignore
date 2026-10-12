@@ -17,3 +17,9 @@ __pycache__/
 .DS_Store
 .gstack/
 eval-results.jsonl
+archive.jsonl
+subs-joined.json
+weekly.json
+feedback.lock
+daemon.log
+finetune-data.jsonl

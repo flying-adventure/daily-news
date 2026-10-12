@@ -279,6 +279,9 @@ STATE_PATH = Path(__file__).parent / "state.json"
 RATINGS_PATH = Path(__file__).parent / "ratings.jsonl"
 SENTLOG_PATH = Path(__file__).parent / "sent-log.jsonl"
 SUBS_PATH = Path(__file__).parent / "subscribers.json"
+SUBS_JOINED_PATH = Path(__file__).parent / "subs-joined.json"
+ARCHIVE_PATH = Path(__file__).parent / "archive.jsonl"
+EMBED_MODEL = "text-embedding-nomic-embed-text-v1.5"
 
 
 def load_subs(env):
@@ -298,14 +301,27 @@ def title_hash(title):
     return hashlib.md5(title.encode()).hexdigest()[:10]
 
 
-def collect_feedback(env):
-    """어젯밤 이후 쌓인 버튼 클릭·리액션·답장을 ratings.jsonl에 저장."""
+def collect_feedback(env, timeout=0):
+    """어젯밤 이후 쌓인 버튼 클릭·리액션·답장을 ratings.jsonl에 저장.
+    timeout>0이면 텔레그램 long-polling — 업데이트 올 때까지 서버가 연결을 유지."""
+    import fcntl
+
+    # 데몬과 스케줄 잡이 겹쳐도 한쪽만 수집하도록 파일 락
+    lockf = open(Path(__file__).parent / "feedback.lock", "w")
+    try:
+        fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return
     token = env["TELEGRAM_TOKEN"]
     state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
     offset = state.get("offset", 0)
     sent, sent_mid = {}, {}
     if SENTLOG_PATH.exists():
-        for line in SENTLOG_PATH.read_text().splitlines():
+        lines = SENTLOG_PATH.read_text().splitlines()
+        if len(lines) > 2000:  # 로그 무한 증가 방지 — 최근 1000건만 유지
+            lines = lines[-1000:]
+            SENTLOG_PATH.write_text("\n".join(lines) + "\n")
+        for line in lines:
             e = json.loads(line)
             sent[e["hash"]] = e
             if "mid" in e:
@@ -315,8 +331,8 @@ def collect_feedback(env):
     try:
         resp = json.load(
             urllib.request.urlopen(
-                f"https://api.telegram.org/bot{token}/getUpdates?offset={offset}&allowed_updates={allowed}",
-                timeout=30,
+                f"https://api.telegram.org/bot{token}/getUpdates?offset={offset}&allowed_updates={allowed}&timeout={timeout}",
+                timeout=timeout + 15,
             )
         )
     except Exception as e:
@@ -423,7 +439,34 @@ def collect_feedback(env):
             elif msg and msg.get("text"):
                 m = msg
                 if m["text"].startswith("/"):
-                    continue  # /start 같은 명령어는 피드백 아님 — 요청사항으로 오염 방지
+                    # /skip 주제 → 빼고 선별, /more 주제 → 우대 선별 (정형 명령어)
+                    parts = m["text"].split(" ", 1)
+                    cmd = parts[0].split("@")[0]
+                    topic = parts[1].strip() if len(parts) > 1 else ""
+                    if cmd in ("/skip", "/more") and topic:
+                        f.write(
+                            json.dumps(
+                                {
+                                    "ts": dt.now().isoformat(),
+                                    "label": "skip" if cmd == "/skip" else "more",
+                                    "topic": topic,
+                                    "chat": chat_id,
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+                        try:
+                            send_telegram(
+                                f"알겠어요 — '{topic}' 기사를 "
+                                + ("빼고 고를게요 🙅" if cmd == "/skip" else "우선 챙길게요 🙋"),
+                                env,
+                                chat_id=chat_id,
+                            )
+                        except Exception:
+                            pass
+                        count += 1
+                    continue  # 그 외 명령어(/start 등)는 피드백 아님 — 요청사항 오염 방지
                 reply = m.get("reply_to_message", {}).get("text", "")
                 if reply.startswith(("📌", "🎲")):
                     # 기사에 대한 답장 = 단어장 요청 (🎲은 취향 밖 와일드카드 기사)
@@ -448,12 +491,18 @@ def collect_feedback(env):
                         + "\n"
                     )
                 else:
+                    text = m["text"]
+                    # 질문형 메시지는 아카이브 검색 답변(RAG), 아니면 요청사항(note)으로
+                    looks_question = text.rstrip().endswith(("?", "？", "까", "까요")) or any(
+                        k in text
+                        for k in ("뭐야", "뭐지", "뭔가", "알려줘", "어떻게", "언제", "왜 ", "어디", "누가")
+                    )
                     f.write(
                         json.dumps(
                             {
                                 "ts": dt.now().isoformat(),
-                                "label": "note",
-                                "text": m["text"],
+                                "label": "ask" if looks_question else "note",
+                                "text": text,
                                 "chat": chat_id,
                             },
                             ensure_ascii=False,
@@ -470,6 +519,12 @@ def collect_feedback(env):
     # 신규 구독자 등록 + 환영 메시지
     if subs != subs_before:
         SUBS_PATH.write_text(json.dumps(sorted(subs)))
+        joined = (
+            json.loads(SUBS_JOINED_PATH.read_text()) if SUBS_JOINED_PATH.exists() else {}
+        )
+        for cid in subs - subs_before:
+            joined[str(cid)] = dt.now().strftime("%Y-%m-%d")
+        SUBS_JOINED_PATH.write_text(json.dumps(joined))
         for cid in subs - subs_before:
             try:
                 welcome = """📰 dailyoscarnews 봇이에요
@@ -644,26 +699,174 @@ def send_weekly_report(env):
             send_telegram("\n".join(lines), env, chat_id=cid)
         except Exception as ex:
             print(f"[warn] 주간 리포트 실패 (chat {cid}): {ex}", file=sys.stderr)
-    WEEKLY_PATH.write_text(json.dumps({"last": today}))
+    # 활동 0인데 가입 7일 넘은 구독자 → 1회만 맞춤 안내 리마인드
+    joined = json.loads(SUBS_JOINED_PATH.read_text()) if SUBS_JOINED_PATH.exists() else {}
+    reminded = set(state.get("reminded", []))
+    for cid in load_subs(env):
+        if cid in per or cid in reminded:
+            continue
+        j = joined.get(str(cid))
+        if not j:
+            continue
+        try:
+            if (datetime.now() - datetime.fromisoformat(j)).days < 7:
+                continue
+        except ValueError:
+            continue
+        try:
+            send_telegram(
+                "📰 이번 주 평가가 없었어요 — 기사 밑 👍/👎 버튼이나 리액션을 눌러주시면 취향에 맞춰 골라드려요.",
+                env,
+                chat_id=cid,
+            )
+            reminded.add(cid)
+        except Exception as ex:
+            print(f"[warn] 리마인드 실패 (chat {cid}): {ex}", file=sys.stderr)
+    state["reminded"] = sorted(reminded)
+    WEEKLY_PATH.write_text(json.dumps({"last": today, "reminded": sorted(reminded)}))
+
+
+def _rating_key(e):
+    """중복 제거용 키: (사람, 대상). good/bad는 기사별, skip/more는 주제별로 최신만 남김.
+    🔖 북마크는 👍/👎와 별개 그룹 — 기사별로 하나만 남고 평가를 덮어쓰지 않음."""
+    if e.get("label") in ("good", "bad"):
+        return (e.get("chat"), "r", e["title"])
+    if e.get("label") == "bookmark":
+        return (e.get("chat"), "bookmark", e["title"])
+    if e.get("label") in ("skip", "more"):
+        return (e.get("chat"), "pref", e["topic"])
+    return None
 
 
 def dedupe_ratings():
-    """ratings.jsonl에서 (사람, 기사) 단위로 중복 제거 — 최신 것만 남김.
-    👍/👎는 서로 덮어쓰고(의견 변경), 🔖 북마크는 따로 하나만 남김."""
+    """ratings.jsonl에서 같은 키의 피드백은 최신 것만 남김."""
     if not RATINGS_PATH.exists():
         return
     lines = RATINGS_PATH.read_text().splitlines()
-    group = {"good": "rate", "bad": "rate", "bookmark": "bookmark"}
-
-    def key(e):
-        g = group.get(e.get("label"))
-        return (g, e.get("chat"), e["title"]) if g else None
-
-    keys = [key(json.loads(line)) for line in lines]
-    last = {k: i for i, k in enumerate(keys) if k}  # 같은 키면 나중 인덱스로 덮어씀
-    keep = [line for i, (line, k) in enumerate(zip(lines, keys)) if not k or last[k] == i]
+    last = {}
+    for i, line in enumerate(lines):
+        k = _rating_key(json.loads(line))
+        if k is not None:
+            last[k] = i
+    keep = []
+    for i, line in enumerate(lines):
+        k = _rating_key(json.loads(line))
+        if k is None or last[k] == i:
+            keep.append(line)
     if len(keep) != len(lines):
         RATINGS_PATH.write_text("\n".join(keep) + "\n")
+
+
+# ---- RAG: 기사 아카이브 + 임베딩 검색 질문 답변 ----
+
+
+def ensure_embed_model():
+    """임베딩 모델(84MB)이 로드돼 있지 않으면 로드."""
+    try:
+        models = json.load(urllib.request.urlopen("http://localhost:1234/v1/models", timeout=5))
+        if any(m["id"] == EMBED_MODEL for m in models.get("data", [])):
+            return True
+    except Exception:
+        return False
+    subprocess.run([LMS, "load", EMBED_MODEL], capture_output=True, timeout=120)
+    try:
+        models = json.load(urllib.request.urlopen("http://localhost:1234/v1/models", timeout=5))
+        return any(m["id"] == EMBED_MODEL for m in models.get("data", []))
+    except Exception:
+        return False
+
+
+def embed(texts):
+    """텍스트 리스트 → 임베딩 벡터 리스트 (LM Studio 임베딩 엔드포인트)."""
+    req = urllib.request.Request(
+        "http://localhost:1234/v1/embeddings",
+        data=json.dumps({"model": EMBED_MODEL, "input": texts}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    data = json.load(urllib.request.urlopen(req, timeout=30))["data"]
+    return [d["embedding"] for d in data]
+
+
+def cosine(a, b):
+    """코사인 유사도 — 두 벡터가 얼마나 같은 방향인지 (-1~1, 클수록 비슷)."""
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def embed_archive():
+    """아카이브에서 아직 임베딩 안 된 기사를 임베딩해 검색 가능하게 함."""
+    if not ARCHIVE_PATH.exists():
+        return
+    entries = [json.loads(l) for l in ARCHIVE_PATH.read_text().splitlines()]
+    pending = [e for e in entries if "emb" not in e]
+    if not pending:
+        return
+    if not ensure_embed_model():
+        print("[warn] 임베딩 모델 로드 실패 — 아카이브 임베딩 스킵", file=sys.stderr)
+        return
+    for e in pending:
+        e["emb"] = embed([e["title"] + " " + e.get("desc", "")])[0]
+    ARCHIVE_PATH.write_text(
+        "\n".join(json.dumps(e, ensure_ascii=False) for e in entries) + "\n"
+    )
+    print(f"[info] 아카이브 {len(pending)}건 임베딩", file=sys.stderr)
+
+
+def asks_pending():
+    """아직 답변 안 보낸 ask 라벨이 있으면 True."""
+    if not RATINGS_PATH.exists():
+        return False
+    for line in RATINGS_PATH.read_text().splitlines():
+        e = json.loads(line)
+        if e.get("label") == "ask" and "answered" not in e:
+            return True
+    return False
+
+
+def answer_asks(env):
+    """질문형 메시지 → 아카이브에서 비슷한 기사 검색 → LLM 답변 발송 (RAG)."""
+    if not (ARCHIVE_PATH.exists() and RATINGS_PATH.exists()):
+        return
+    entries = [json.loads(l) for l in RATINGS_PATH.read_text().splitlines()]
+    pending = [i for i, e in enumerate(entries) if e.get("label") == "ask" and "answered" not in e]
+    if not pending:
+        return
+    archive = [json.loads(l) for l in ARCHIVE_PATH.read_text().splitlines()]
+    archive = [a for a in archive if a.get("emb")]
+    if not archive:
+        return
+    if not ensure_embed_model():
+        print("[warn] 임베딩 모델 로드 실패 — 질문 답변 스킵", file=sys.stderr)
+        return
+    for i in pending:
+        q = entries[i]
+        try:
+            qv = embed([q["text"]])[0]
+            scored = sorted(archive, key=lambda a: cosine(qv, a["emb"]), reverse=True)[:3]
+            ctx = "\n\n".join(
+                f"제목: {a['title']}\n설명: {a['desc']}\n링크: {a['link']}" for a in scored
+            )
+            ans = llm(
+                f"""사용자 질문에 아래 '아카이브에서 찾은 기사'만 근거로 한국어 3문장 내로 답하라.
+근거에 없는 내용은 지어내지 말고 "관련 기사를 못 찾았다"고 솔직히 답하라.
+질문: {q['text']}
+아카이브에서 찾은 기사:
+{ctx}""",
+                2000,
+            )
+            send_telegram(
+                ans or "관련 기사를 못 찾았어요.",
+                env,
+                chat_id=q.get("chat") or int(env["TELEGRAM_CHAT_ID"]),
+            )
+        except Exception as ex:
+            print(f"[warn] 질문 답변 실패: {ex}", file=sys.stderr)
+        entries[i]["answered"] = True
+    RATINGS_PATH.write_text(
+        "\n".join(json.dumps(e, ensure_ascii=False) for e in entries) + "\n"
+    )
 
 
 def tags_pending():
@@ -765,6 +968,8 @@ def preference_block(chat_id=None):
     cid = str(chat_id) if chat_id is not None else own
     good, bad, notes = [], [], []
     good_tags, bad_tags = Counter(), Counter()
+    prefs = {}  # topic → skip/more (나중 것이 이김)
+    note_cutoff = datetime.now() - timedelta(days=30)  # 요청사항은 30일 유효
     for line in RATINGS_PATH.read_text().splitlines():
         e = json.loads(line)
         # chat 없는 예전 기록 = 본인 것. 다른 사람 피드백은 이 사람 취향에 안 섞임
@@ -779,7 +984,14 @@ def preference_block(chat_id=None):
         elif e["label"] == "bad":
             bad.append(e["title"])
             bad_tags.update(e.get("tags", []))
+        elif e["label"] in ("skip", "more"):
+            prefs[e["topic"]] = e["label"]
         elif e["label"] == "note":
+            try:
+                if datetime.fromisoformat(e["ts"]) < note_cutoff:
+                    continue  # 30일 지난 요청은 만료 — 취향은 변한다
+            except (KeyError, ValueError):
+                continue
             notes.append(e["text"])
     parts = []
     if good_tags:
@@ -794,6 +1006,12 @@ def preference_block(chat_id=None):
         parts.append("최근 좋아한 기사: " + " / ".join(good[-5:]))
     if bad:
         parts.append("최근 싫어한 기사: " + " / ".join(bad[-5:]))
+    skips = [t for t, l in prefs.items() if l == "skip"]
+    mores = [t for t, l in prefs.items() if l == "more"]
+    if skips:
+        parts.append("이 주제는 제외: " + ", ".join(skips))
+    if mores:
+        parts.append("이 주제를 우대: " + ", ".join(mores))
     if notes:
         parts.append("사용자 요청사항: " + " / ".join(notes[-10:]))
     return ("\n이 사용자의 취향을 최우선으로 반영하라:\n" + "\n".join(parts) + "\n") if parts else ""
@@ -957,8 +1175,13 @@ def main():
                     send_weekly_report(env)
                 except Exception as e:
                     print(f"[warn] 주간 리포트 실패: {e}", file=sys.stderr)
-        # 다이제스트 없이 피드백·단어장·태그만 처리하는 추가 실행용 (5분 주기 잡)
-        if not dry and (vocab_pending() or tags_pending()):
+        # 다이제스트 없이 피드백·단어장·태그·질문만 처리하는 추가 실행용 (5분 주기 잡)
+        if not dry:
+            try:
+                embed_archive()  # 새 기사 임베딩 (RAG 검색용, LLM 아님)
+            except Exception as e:
+                print(f"[warn] 아카이브 임베딩 실패: {e}", file=sys.stderr)
+        if not dry and (vocab_pending() or tags_pending() or asks_pending()):
             ensure_model()
             try:
                 process_vocab()
@@ -968,6 +1191,10 @@ def main():
                 tag_pending_ratings()
             except Exception as e:
                 print(f"[warn] 태그 부여 실패: {e}", file=sys.stderr)
+            try:
+                answer_asks(env)  # 질문형 메시지 → 아카이브 검색 답변
+            except Exception as e:
+                print(f"[warn] 질문 답변 실패: {e}", file=sys.stderr)
         publish(env, dry)  # 🔖 저장이 들어왔으면 저장함 페이지 갱신
         return
     items = collect()
@@ -985,6 +1212,14 @@ def main():
             tag_pending_ratings()  # 피드백 기사에 주제 태그 부여 → 취향 주제 집계
         except Exception as e:
             print(f"[warn] 태그 부여 실패: {e}", file=sys.stderr)
+        try:
+            answer_asks(env)  # 질문형 메시지 → 아카이브 검색 답변
+        except Exception as e:
+            print(f"[warn] 질문 답변 실패: {e}", file=sys.stderr)
+        try:
+            embed_archive()  # 어제까지 쌓인 기사 임베딩 (RAG 검색용)
+        except Exception as e:
+            print(f"[warn] 아카이브 임베딩 실패: {e}", file=sys.stderr)
     date = datetime.now().strftime("%m/%d")
     if dry:
         # 터미널 테스트는 본인 취향 한 세트만 출력
@@ -1002,6 +1237,7 @@ def main():
     site = site_url(env)  # 비어 있으면 🔖 저장·📚 저장함 기능 꺼짐
     summary_cache = {}  # 구독자끼리 겹치는 기사는 요약 재사용
     one_cache = {}  # 한줄요약도 같은 방식으로 재사용
+    archived = set()  # 이번 실행에서 아카이브에 쓴 기사 해시
     for cid in subs:
         picked = pick(items, chat_id=cid)  # 구독자별 취향으로 따로 선별
         header_buttons = None
@@ -1051,11 +1287,23 @@ def main():
             with SENTLOG_PATH.open("a") as f:
                 f.write(
                     json.dumps(
-                        {"hash": h, "title": it["title"], "link": it["link"], "mid": mid, "one": one_cache.get(key, "")},
+                        {
+                            "hash": h,
+                            "title": it["title"],
+                            "link": it["link"],
+                            "mid": mid,
+                            "ts": datetime.now().isoformat(),
+                            "one": one_cache.get(key, ""),
+                        },
                         ensure_ascii=False,
                     )
                     + "\n"
                 )
+            # 아카이브 — RAG 질문 검색용으로 보낸 기사 저장 (기사당 1줄)
+            if h not in archived:
+                with ARCHIVE_PATH.open("a") as f:
+                    f.write(json.dumps({"date": date, "hash": h, "title": it["title"], "link": it["link"], "desc": it["desc"]}, ensure_ascii=False) + "\n")
+                archived.add(h)
     SUBS_PATH.write_text(json.dumps(sorted(subs)))
     publish(env)  # 새 구독자 토큰이 생겼으면 저장함 페이지 갱신
     print(f"전송 완료 ({len(items)}건, 구독자 {len(subs)}명)")
