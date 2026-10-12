@@ -144,6 +144,76 @@ def test_bookmarks_get_topic_tags():
     assert read_jsonl(digest.RATINGS_PATH)[0]["tags"] == ["AI업계"]
 
 
+# ---- Task 3: 한줄요약 · 비밀 토큰 · 발송 ----
+
+
+def test_one_liner_falls_back_when_llm_fails():
+    setup()
+
+    def boom(*a, **k):
+        raise RuntimeError("LM Studio 꺼짐")
+
+    patch(llm=boom)
+    assert digest.one_liner({"title": "T"}, "- 첫 줄 사실\n- 둘째") == "첫 줄 사실"
+    patch(llm=lambda *a, **k: "")
+    assert digest.one_liner({"title": "T"}, "- ") == "T"
+    patch(llm=lambda *a, **k: "짧은 한 문장\n군더더기")
+    assert digest.one_liner({"title": "T"}, "- x") == "짧은 한 문장"
+
+
+def test_token_is_stable_and_different_per_person():
+    setup()
+    a1, a2, b = digest.get_token(111), digest.get_token("111"), digest.get_token(222)
+    assert a1 == a2 and a1 != b and len(a1) >= 22, (a1, a2, b)
+    assert json.loads(digest.TOKENS_PATH.read_text()) == {"111": a1, "222": b}
+
+
+def run_digest(site_url):
+    """가짜 기사 1건으로 다이제스트 발송을 돌리고 보낸 메시지 목록을 돌려준다."""
+    if site_url is not None:
+        digest.ENV_PATH.write_text(f"TELEGRAM_TOKEN=x\nTELEGRAM_CHAT_ID=111\nSITE_URL={site_url}\n")
+    item = {"source": "HN", "title": "기사", "link": "https://ex.com/1", "desc": "d"}
+    sent = []
+
+    def fake_send(text, env, buttons=None, chat_id=None):
+        sent.append((text, buttons, chat_id))
+        return 77
+
+    urllib.request.urlopen = fake_telegram([], [])
+    patch(
+        collect=lambda: [item],
+        ensure_model=lambda: None,
+        process_vocab=lambda: None,
+        tag_pending_ratings=lambda: None,
+        pick=lambda items, chat_id=None: [item],
+        summarize_article=lambda it, body=None: "- 사실",
+        one_liner=lambda it, summary: "한줄",
+        send_telegram=fake_send,
+    )
+    digest.main()
+    return sent
+
+
+def test_digest_adds_save_button_and_my_page_link():
+    setup()
+    sent = run_digest("https://news.example.com/")
+    (_, header_buttons, _), (_, article_buttons, _) = sent
+    token = json.loads(digest.TOKENS_PATH.read_text())["111"]
+    assert header_buttons == [[{"text": "📚 내 저장함", "url": f"https://news.example.com/u/{token}/"}]]
+    assert {"text": "🔖 저장", "callback_data": "s:" + digest.title_hash("기사")} in article_buttons[0]
+    log = read_jsonl(digest.SENTLOG_PATH)[-1]
+    assert (log["link"], log["one"], log["mid"]) == ("https://ex.com/1", "한줄", 77), log
+
+
+def test_digest_without_valid_site_url_still_sends():
+    for bad in (None, "news.example.com"):  # 없음 / https:// 빠짐
+        setup()
+        sent = run_digest(bad)
+        (_, header_buttons, _), (_, article_buttons, _) = sent
+        assert header_buttons is None, header_buttons
+        assert all(b["text"] != "🔖 저장" for b in article_buttons[0]), article_buttons
+
+
 if __name__ == "__main__":
     names = sys.argv[1:]
     tests = [v for k, v in list(globals().items()) if k.startswith("test_") and (not names or k in names)]

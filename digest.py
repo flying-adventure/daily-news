@@ -233,6 +233,25 @@ def summarize_article(item, body=None):
     return out or f"- {item['desc'][:200]}"
 
 
+def one_liner(item, summary):
+    """저장함 페이지용 한 문장 요약. LLM이 실패하면 5줄 요약 첫 줄로 대체."""
+    first = summary.strip().splitlines()[0] if summary.strip() else ""
+    fallback = first.lstrip("- ").strip() or item["title"]
+    try:
+        out = llm(
+            f"""다음 기사 요약을 한국어 한 문장(60자 이내)으로 줄여라. 문장만 출력.
+
+제목: {item['title']}
+요약:
+{summary}""",
+            300,
+        )
+    except Exception as e:
+        print(f"[warn] 한줄요약 실패 ({item['title'][:30]}): {e}", file=sys.stderr)
+        return fallback
+    return out.splitlines()[0].strip() if out else fallback
+
+
 def send_telegram(text, env, buttons=None, chat_id=None):
     token = env["TELEGRAM_TOKEN"]
     chat_id = chat_id if chat_id is not None else env["TELEGRAM_CHAT_ID"]
@@ -452,16 +471,15 @@ def collect_feedback(env):
         SUBS_PATH.write_text(json.dumps(sorted(subs)))
         for cid in subs - subs_before:
             try:
-                send_telegram(
-                    """📰 dailyoscarnews 봇이에요
+                welcome = """📰 dailyoscarnews 봇이에요
 
 매일 아침 8시, AI/개발 뉴스 중 중요한 것만 골라 한국어 5줄 요약으로 보내드려요.
 
 • 기사 밑 [👍 관심] [👎 별로] 버튼이나 메시지 더블탭 👍 리액션으로 취향을 기록할 수 있어요.
-• 기사에 모르는 단어가 나오면, 그 기사 메시지에 '답장'으로 단어만 적어주세요. 초보용 설명을 만들어 보내드려요.""",
-                    env,
-                    chat_id=cid,
-                )
+• 기사에 모르는 단어가 나오면, 그 기사 메시지에 '답장'으로 단어만 적어주세요. 초보용 설명을 만들어 보내드려요."""
+                if site_url(env):
+                    welcome += "\n• 🔖 저장 버튼으로 나중에 읽을 기사를 모아두면, 다이제스트 첫 메시지의 📚 내 저장함에서 볼 수 있어요."
+                send_telegram(welcome, env, chat_id=cid)
                 print(f"[info] 신규 구독자: {cid}", file=sys.stderr)
             except Exception:
                 pass
@@ -780,6 +798,28 @@ def preference_block(chat_id=None):
     return ("\n이 사용자의 취향을 최우선으로 반영하라:\n" + "\n".join(parts) + "\n") if parts else ""
 
 
+# ---- 저장함 웹페이지: 사람별 비밀 주소에 🔖 저장한 기사 목록 ----
+TOKENS_PATH = Path(__file__).parent / "tokens.json"
+
+
+def site_url(env):
+    """저장함 사이트 주소. 없거나 http(s)로 시작하지 않으면 "" — 저장 기능 전체 꺼짐."""
+    url = env.get("SITE_URL", "").strip().rstrip("/")
+    return url if url.startswith(("https://", "http://")) else ""
+
+
+def get_token(chat_id):
+    """사람별 저장함 비밀 주소 토큰. 없으면 새로 만들어 tokens.json에 보관."""
+    import secrets
+
+    tokens = json.loads(TOKENS_PATH.read_text()) if TOKENS_PATH.exists() else {}
+    key = str(chat_id)
+    if key not in tokens:
+        tokens[key] = secrets.token_urlsafe(16)  # 22자 — 추측 불가
+        TOKENS_PATH.write_text(json.dumps(tokens))
+    return tokens[key]
+
+
 def main():
     dry = "--dry" in sys.argv
     env = load_env()
@@ -841,11 +881,21 @@ def main():
             print(f"{emoji} {it['title']}\n\n{summary}\n\n🔗 {it['link']}", "\n" + "─" * 30)
         return
     subs = load_subs(env)
+    site = site_url(env)  # 비어 있으면 🔖 저장·📚 저장함 기능 꺼짐
     summary_cache = {}  # 구독자끼리 겹치는 기사는 요약 재사용
+    one_cache = {}  # 한줄요약도 같은 방식으로 재사용
     for cid in subs:
         picked = pick(items, chat_id=cid)  # 구독자별 취향으로 따로 선별
+        header_buttons = None
+        if site:
+            header_buttons = [[{"text": "📚 내 저장함", "url": f"{site}/u/{get_token(cid)}/"}]]
         try:
-            send_telegram(f"🗞 AI/개발 다이제스트 {date} — 오늘 {len(picked)}건", env, chat_id=cid)
+            send_telegram(
+                f"🗞 AI/개발 다이제스트 {date} — 오늘 {len(picked)}건",
+                env,
+                buttons=header_buttons,
+                chat_id=cid,
+            )
         except Exception as e:
             print(f"[warn] 헤더 전송 실패 (chat {cid}): {e}", file=sys.stderr)
             if any(s in str(e) for s in ("403", "chat not found", "blocked")):
@@ -860,6 +910,8 @@ def main():
                     print(f"[warn] 요약 실패 ({it['title'][:30]}): {e}", file=sys.stderr)
                     summary_cache[key] = f"- {it['desc'][:200]}"
             summary = summary_cache[key]
+            if site and key not in one_cache:
+                one_cache[key] = one_liner(it, summary)
             emoji = "🎲" if it.get("wild") else "📌"  # 와일드카드 = 취향 밖 기사 표시
             msg = f"{emoji} {it['title']}\n\n{summary}\n\n🔗 {it['link']}"
             h = title_hash(it["title"])
@@ -867,6 +919,8 @@ def main():
                 {"text": "👍 관심", "callback_data": f"g:{h}"},
                 {"text": "👎 별로", "callback_data": f"b:{h}"},
             ]]
+            if site:
+                buttons[0].append({"text": "🔖 저장", "callback_data": f"s:{h}"})
             try:
                 mid = send_telegram(msg, env, buttons=buttons, chat_id=cid)
             except Exception as e:
@@ -877,7 +931,13 @@ def main():
                 continue
             # mid = 구독자별 메시지의 message_id. 리액션(👍/⭐ 더블탭) 역추적용
             with SENTLOG_PATH.open("a") as f:
-                f.write(json.dumps({"hash": h, "title": it["title"], "link": it["link"], "mid": mid}, ensure_ascii=False) + "\n")
+                f.write(
+                    json.dumps(
+                        {"hash": h, "title": it["title"], "link": it["link"], "mid": mid, "one": one_cache.get(key, "")},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
     SUBS_PATH.write_text(json.dumps(sorted(subs)))
     print(f"전송 완료 ({len(items)}건, 구독자 {len(subs)}명)")
 
