@@ -86,6 +86,11 @@ launchctl load ~/Library/LaunchAgents/com.example.news-digest.plist
 <key>StartInterval</key><integer>300</integer>
 ```
 
+## 최근 개선 (2026-10-12)
+
+- **구독자별 개인화 선별**: 구독자마다 자기 피드백으로 따로 선별 — 사람마다 다른 5개 수신. 겹치는 기사는 요약 캐시로 재사용
+- **피드백 중복 제거**: 같은 사람이 같은 기사에 연타/의견 변경(👍→👎)하면 최신 것만 유지 (`dedupe_ratings`)
+
 ## 최근 개선 (2026-09-24)
 
 - **피드백 수집 시점 버그 수정**: 새 글이 없는 날 early return으로 수집이 스킵돼, 누른 반응이 텔레그램 서버의 ~24시간 보관 기한을 넘겨 소실되던 문제 → 수집을 `main()` 맨 앞으로 이동

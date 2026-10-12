@@ -133,7 +133,7 @@ def llm(prompt, max_tokens=6000, schema=None):
 PICK_N = 5  # 취향 기반 4개 + 취향 밖 와일드카드 1개
 
 
-def pick(items):
+def pick(items, chat_id=None):
     import random
     import re
 
@@ -144,7 +144,7 @@ def pick(items):
     ans = llm(
         f"""아래 AI/개발 뉴스 목록에서 개발자에게 가장 중요한 {PICK_N - 1}개의 번호를 "picks"에 골라라.
 중복(같은 사건)·홍보성 글은 제외.
-{preference_block()}
+{preference_block(chat_id)}
 추가로 "wildcard"에는 picks와 겹치지 않는 번호 하나를 골라라 — 이 사용자의 평소 취향과 다른 주제로,
 시야를 넓혀줄 만한 의외의 기사. 양질이되 취향 예시와 다른 분야일수록 좋다.
 {listing}""",
@@ -182,6 +182,7 @@ def pick(items):
     else:
         w = None
     if w:
+        w = dict(w)  # items는 구독자별로 재사용 — 공유 dict에 표시 남기지 않게 복사
         w["wild"] = True
         picked.append(w)
     return picked
@@ -587,16 +588,18 @@ def vocab_pending():
     return False
 
 
-def preference_block():
-    """쌓인 피드백(본인 것만)을 pick 프롬프트용 취향 예시로 변환."""
+def preference_block(chat_id=None):
+    """쌓인 피드백을 pick 프롬프트용 취향 예시로 변환. chat_id별로 그 사람 것만."""
     if not RATINGS_PATH.exists():
         return ""
     own = load_env().get("TELEGRAM_CHAT_ID", "")
+    cid = str(chat_id) if chat_id is not None else own
     good, bad, notes = [], [], []
     for line in RATINGS_PATH.read_text().splitlines():
         e = json.loads(line)
-        # chat 없는 예전 기록 = 본인 것. 다른 구독자 피드백은 내 취향 학습에서 제외
-        if e.get("chat") and str(e["chat"]) != own:
+        # chat 없는 예전 기록 = 본인 것. 다른 사람 피드백은 이 사람 취향에 안 섞임
+        e_chat = str(e["chat"]) if e.get("chat") else own
+        if e_chat != cid:
             continue
         if e["label"] == "good":
             good.append(e["title"])
@@ -646,32 +649,45 @@ def main():
             process_vocab()  # 기사 답장으로 남긴 단어 → 옵시디언 단어장
         except Exception as e:
             print(f"[warn] 단어장 처리 실패: {e}", file=sys.stderr)
-    picked = pick(items)
     date = datetime.now().strftime("%m/%d")
-    subs = load_subs(env)
-    if not dry:
-        for cid in subs:
+    if dry:
+        # 터미널 테스트는 본인 취향 한 세트만 출력
+        for it in pick(items):
             try:
-                send_telegram(f"🗞 AI/개발 다이제스트 {date} — 오늘 {len(picked)}건", env, chat_id=cid)
+                summary = summarize_article(it)
             except Exception as e:
-                print(f"[warn] 헤더 전송 실패 (chat {cid}): {e}", file=sys.stderr)
-    for it in picked:
+                print(f"[warn] 요약 실패 ({it['title'][:30]}): {e}", file=sys.stderr)
+                summary = f"- {it['desc'][:200]}"
+            emoji = "🎲" if it.get("wild") else "📌"
+            print(f"{emoji} {it['title']}\n\n{summary}\n\n🔗 {it['link']}", "\n" + "─" * 30)
+        return
+    subs = load_subs(env)
+    summary_cache = {}  # 구독자끼리 겹치는 기사는 요약 재사용
+    for cid in subs:
+        picked = pick(items, chat_id=cid)  # 구독자별 취향으로 따로 선별
         try:
-            summary = summarize_article(it)
+            send_telegram(f"🗞 AI/개발 다이제스트 {date} — 오늘 {len(picked)}건", env, chat_id=cid)
         except Exception as e:
-            print(f"[warn] 요약 실패 ({it['title'][:30]}): {e}", file=sys.stderr)
-            summary = f"- {it['desc'][:200]}"
-        emoji = "🎲" if it.get("wild") else "📌"  # 와일드카드 = 취향 밖 기사 표시
-        msg = f"{emoji} {it['title']}\n\n{summary}\n\n🔗 {it['link']}"
-        if dry:
-            print(msg, "\n" + "─" * 30)
+            print(f"[warn] 헤더 전송 실패 (chat {cid}): {e}", file=sys.stderr)
+            if any(s in str(e) for s in ("403", "chat not found", "blocked")):
+                subs.discard(cid)
             continue
-        h = title_hash(it["title"])
-        buttons = [[
-            {"text": "👍 관심", "callback_data": f"g:{h}"},
-            {"text": "👎 별로", "callback_data": f"b:{h}"},
-        ]]
-        for cid in subs:
+        for it in picked:
+            key = it["link"] or it["title"]
+            if key not in summary_cache:
+                try:
+                    summary_cache[key] = summarize_article(it)
+                except Exception as e:
+                    print(f"[warn] 요약 실패 ({it['title'][:30]}): {e}", file=sys.stderr)
+                    summary_cache[key] = f"- {it['desc'][:200]}"
+            summary = summary_cache[key]
+            emoji = "🎲" if it.get("wild") else "📌"  # 와일드카드 = 취향 밖 기사 표시
+            msg = f"{emoji} {it['title']}\n\n{summary}\n\n🔗 {it['link']}"
+            h = title_hash(it["title"])
+            buttons = [[
+                {"text": "👍 관심", "callback_data": f"g:{h}"},
+                {"text": "👎 별로", "callback_data": f"b:{h}"},
+            ]]
             try:
                 mid = send_telegram(msg, env, buttons=buttons, chat_id=cid)
             except Exception as e:
@@ -683,9 +699,8 @@ def main():
             # mid = 구독자별 메시지의 message_id. 리액션(👍 더블탭) 역추적용
             with SENTLOG_PATH.open("a") as f:
                 f.write(json.dumps({"hash": h, "title": it["title"], "mid": mid}, ensure_ascii=False) + "\n")
-    if not dry:
-        SUBS_PATH.write_text(json.dumps(sorted(subs)))
-    print(f"전송 완료 ({len(items)}건 중 {len(picked)}건 요약, 구독자 {len(subs)}명)")
+    SUBS_PATH.write_text(json.dumps(sorted(subs)))
+    print(f"전송 완료 ({len(items)}건, 구독자 {len(subs)}명)")
 
 
 if __name__ == "__main__":
