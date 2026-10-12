@@ -215,8 +215,9 @@ def article_text(url):
     return text[:2500]
 
 
-def summarize_article(item):
-    body = article_text(item["link"]) or item["desc"]
+def summarize_article(item, body=None):
+    if body is None:  # eval에서 저장된 본문을 넘길 수 있게
+        body = article_text(item["link"]) or item["desc"]
     out = llm(
         f"""다음 기사를 한국어 5줄로 요약하라.
 - 각 줄은 "- "로 시작, 한 문장씩.
