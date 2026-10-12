@@ -3,6 +3,7 @@
 # 사용: python3 digest.py        (텔레그램 전송)
 #       python3 digest.py --dry  (전송 없이 터미널 출력)
 import json
+import os
 import subprocess
 import sys
 import urllib.parse
@@ -233,6 +234,25 @@ def summarize_article(item, body=None):
     return out or f"- {item['desc'][:200]}"
 
 
+def one_liner(item, summary):
+    """저장함 페이지용 한 문장 요약. LLM이 실패하면 5줄 요약 첫 줄로 대체."""
+    first = summary.strip().splitlines()[0] if summary.strip() else ""
+    fallback = first.lstrip("- ").strip() or item["title"]
+    try:
+        out = llm(
+            f"""다음 기사 요약을 한국어 한 문장(60자 이내)으로 줄여라. 문장만 출력.
+
+제목: {item['title']}
+요약:
+{summary}""",
+            300,
+        )
+    except Exception as e:
+        print(f"[warn] 한줄요약 실패 ({item['title'][:30]}): {e}", file=sys.stderr)
+        return fallback
+    return out.splitlines()[0].strip() if out else fallback
+
+
 def send_telegram(text, env, buttons=None, chat_id=None):
     token = env["TELEGRAM_TOKEN"]
     chat_id = chat_id if chat_id is not None else env["TELEGRAM_CHAT_ID"]
@@ -354,12 +374,33 @@ def collect_feedback(env, timeout=0):
                         + "\n"
                     )
                     count += 1
+                elif label == "s" and h in sent:
+                    # 🔖 저장 버튼 = 나중에 읽기 북마크 → 저장함 페이지에 표시
+                    f.write(
+                        json.dumps(
+                            {
+                                "ts": dt.now().isoformat(),
+                                "label": "bookmark",
+                                "title": sent[h]["title"],
+                                "link": sent[h].get("link", ""),
+                                "one": sent[h].get("one", ""),
+                                "chat": chat_id,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                    count += 1
                 # 버튼 로딩 표시 해제
                 try:
                     urllib.request.urlopen(
                         f"https://api.telegram.org/bot{token}/answerCallbackQuery",
                         data=urllib.parse.urlencode(
-                            {"callback_query_id": cq["id"], "text": "기록됨 ✅"}
+                            {
+                                "callback_query_id": cq["id"],
+                                # 실제로 북마크를 기록했을 때만 "저장됨" (모르는 기사면 일반 문구)
+                                "text": "저장됨 🔖" if label == "s" and h in sent else "기록됨 ✅",
+                            }
                         ).encode(),
                         timeout=10,
                     )
@@ -470,7 +511,8 @@ def collect_feedback(env, timeout=0):
                         + "\n"
                     )
                 count += 1
-    STATE_PATH.write_text(json.dumps({"offset": offset}))
+    state["offset"] = offset  # 다른 키(site_hash 등)는 보존
+    STATE_PATH.write_text(json.dumps(state))
     if count:
         print(f"[info] 피드백 {count}건 수집", file=sys.stderr)
     # 같은 사람이 같은 기사에 여러 번 누른 것(연타/의견 변경)은 최신만 유지
@@ -486,16 +528,15 @@ def collect_feedback(env, timeout=0):
         SUBS_JOINED_PATH.write_text(json.dumps(joined))
         for cid in subs - subs_before:
             try:
-                send_telegram(
-                    """📰 dailyoscarnews 봇이에요
+                welcome = """📰 dailyoscarnews 봇이에요
 
 매일 아침 8시, AI/개발 뉴스 중 중요한 것만 골라 한국어 5줄 요약으로 보내드려요.
 
 • 기사 밑 [👍 관심] [👎 별로] 버튼이나 메시지 더블탭 👍 리액션으로 취향을 기록할 수 있어요.
-• 기사에 모르는 단어가 나오면, 그 기사 메시지에 '답장'으로 단어만 적어주세요. 초보용 설명을 만들어 보내드려요.""",
-                    env,
-                    chat_id=cid,
-                )
+• 기사에 모르는 단어가 나오면, 그 기사 메시지에 '답장'으로 단어만 적어주세요. 초보용 설명을 만들어 보내드려요."""
+                if site_url(env):
+                    welcome += "\n• 🔖 저장 버튼으로 나중에 읽을 기사를 모아두면, 다이제스트 첫 메시지의 📚 내 저장함에서 볼 수 있어요."
+                send_telegram(welcome, env, chat_id=cid)
                 print(f"[info] 신규 구독자: {cid}", file=sys.stderr)
             except Exception:
                 pass
@@ -653,7 +694,7 @@ def send_weekly_report(env):
             tops = ", ".join(t for t, _ in p["bt"].most_common(5))
             lines.append(f"👎 {p['bad']}건" + (f" — 싫어한 주제: {tops}" if tops else ""))
         if p["bm"]:
-            lines += ["", "⭐ 이번 주 북마크:"]
+            lines += ["", "🔖 이번 주 저장:"]
             lines += [f"• {t} {l}".rstrip() for t, l in p["bm"]]
         try:
             send_telegram("\n".join(lines), env, chat_id=cid)
@@ -687,9 +728,12 @@ def send_weekly_report(env):
 
 
 def _rating_key(e):
-    """중복 제거용 키: (사람, 대상). good/bad는 기사별, skip/more는 주제별로 최신만 남김."""
+    """중복 제거용 키: (사람, 대상). good/bad는 기사별, skip/more는 주제별로 최신만 남김.
+    🔖 북마크는 👍/👎와 별개 그룹 — 기사별로 하나만 남고 평가를 덮어쓰지 않음."""
     if e.get("label") in ("good", "bad"):
         return (e.get("chat"), "r", e["title"])
+    if e.get("label") == "bookmark":
+        return (e.get("chat"), "bookmark", e["title"])
     if e.get("label") in ("skip", "more"):
         return (e.get("chat"), "pref", e["topic"])
     return None
@@ -827,12 +871,12 @@ def answer_asks(env):
 
 
 def tags_pending():
-    """태그가 안 달린 good/bad 피드백이 있으면 True."""
+    """태그가 안 달린 good/bad/bookmark 피드백이 있으면 True."""
     if not RATINGS_PATH.exists():
         return False
     for line in RATINGS_PATH.read_text().splitlines():
         e = json.loads(line)
-        if e.get("label") in ("good", "bad") and e.get("title") and "tags" not in e:
+        if e.get("label") in ("good", "bad", "bookmark") and e.get("title") and "tags" not in e:
             return True
     return False
 
@@ -845,7 +889,7 @@ def tag_pending_ratings():
     pending = [
         i
         for i, e in enumerate(entries)
-        if e.get("label") in ("good", "bad") and e.get("title") and "tags" not in e
+        if e.get("label") in ("good", "bad", "bookmark") and e.get("title") and "tags" not in e
     ]
     if not pending:
         return
@@ -933,7 +977,9 @@ def preference_block(chat_id=None):
         e_chat = str(e["chat"]) if e.get("chat") else own
         if e_chat != cid:
             continue
-        if e["label"] == "good":
+        if e["label"] in ("good", "bookmark"):  # 저장 = 👍보다 강한 관심 신호
+            if e["title"] in good:  # 👍와 저장이 겹치면 한 번만
+                continue
             good.append(e["title"])
             good_tags.update(e.get("tags", []))
         elif e["label"] == "bad":
@@ -970,6 +1016,164 @@ def preference_block(chat_id=None):
     if notes:
         parts.append("사용자 요청사항: " + " / ".join(notes[-10:]))
     return ("\n이 사용자의 취향을 최우선으로 반영하라:\n" + "\n".join(parts) + "\n") if parts else ""
+
+
+# ---- 저장함 웹페이지: 사람별 비밀 주소에 🔖 저장한 기사 목록 ----
+TOKENS_PATH = Path(__file__).parent / "tokens.json"
+
+
+def site_url(env):
+    """저장함 사이트 주소. 없거나 http(s)로 시작하지 않거나 호스트에 점(.)이 없으면 "" — 저장 기능 전체 꺼짐.
+    (텔레그램이 거부하는 주소면 헤더 전송이 실패해 그 사람 다이제스트 전체가 빠지므로 엄격히 검사)"""
+    url = env.get("SITE_URL", "").strip().rstrip("/")
+    ok = url.startswith(("https://", "http://")) and "." in urllib.parse.urlsplit(url).netloc
+    return url if ok else ""
+
+
+def get_token(chat_id):
+    """사람별 저장함 비밀 주소 토큰. 없으면 새로 만들어 tokens.json에 보관."""
+    import secrets
+
+    tokens = json.loads(TOKENS_PATH.read_text()) if TOKENS_PATH.exists() else {}
+    key = str(chat_id)
+    if key not in tokens:
+        tokens[key] = secrets.token_urlsafe(16)  # 22자 — 추측 불가
+        TOKENS_PATH.write_text(json.dumps(tokens))
+    return tokens[key]
+
+
+SITE_DIR = Path(__file__).parent / "site"
+
+
+def page_html(title, body):
+    return f"""<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>{title}</title>
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;max-width:680px;margin:0 auto;padding:20px 16px;line-height:1.6;color:#1a1a1a;background:#fafafa}}
+h1{{font-size:1.4rem}}
+h2{{font-size:.85rem;color:#888;margin:28px 0 4px;font-weight:600}}
+article{{padding:12px 0;border-bottom:1px solid #e5e5e5}}
+h3{{font-size:1rem;margin:0 0 4px}}
+p{{margin:0;color:#555}}
+a{{color:#1a5fd0;text-decoration:none}}
+@media (prefers-color-scheme:dark){{body{{color:#e8e8e8;background:#121212}}article{{border-color:#2a2a2a}}p{{color:#aaa}}a{{color:#8ab4ff}}}}
+</style></head><body>
+<h1>{title}</h1>
+{body}
+</body></html>
+"""
+
+
+def render_page(saves):
+    """저장 기록 목록 → 저장함 HTML. 최신 저장이 위, 날짜별로 묶음."""
+    import html
+
+    rows, day = [], None
+    for e in sorted(saves, key=lambda e: e["ts"], reverse=True):
+        if e["ts"][:10] != day:
+            day = e["ts"][:10]
+            rows.append(f"<h2>{day}</h2>")
+        title = html.escape(e["title"])
+        link = e.get("link", "")
+        # 제목·링크는 외부 RSS에서 온 값 — javascript: 주소가 우리 도메인에서 실행되지 않게 http(s)만 링크로
+        if link.startswith(("https://", "http://")):
+            title = f'<a href="{html.escape(link)}" target="_blank" rel="noopener noreferrer">{title}</a>'
+        rows.append(f"<article><h3>{title}</h3><p>{html.escape(e.get('one', ''))}</p></article>")
+    body = "\n".join(rows) or "<p>아직 저장한 기사가 없어요. 텔레그램에서 🔖 저장을 눌러보세요.</p>"
+    return page_html("📚 내 저장함", body)
+
+
+def site_pages():
+    """tokens.json의 모든 사람 저장함 페이지를 메모리에서 만든다. {상대경로: HTML}"""
+    tokens = json.loads(TOKENS_PATH.read_text()) if TOKENS_PATH.exists() else {}
+    saves = {}
+    if RATINGS_PATH.exists():
+        for line in RATINGS_PATH.read_text().splitlines():
+            e = json.loads(line)
+            if e.get("label") == "bookmark":
+                saves.setdefault(str(e.get("chat")), []).append(e)
+    pages = {"index.html": page_html("daily-news", "<p>개인 저장함 주소는 텔레그램 봇이 보내드려요.</p>")}
+    for chat, token in tokens.items():
+        pages[f"u/{token}/index.html"] = render_page(saves.get(chat, []))
+    return pages
+
+
+def site_hash(pages):
+    """페이지 전체의 내용 해시 — 지난 업로드와 같은지 비교용."""
+    import hashlib
+
+    h = hashlib.sha256()
+    for rel, content in sorted(pages.items()):
+        h.update(rel.encode() + content.encode())
+    return h.hexdigest()
+
+
+def build_site(pages=None):
+    """저장함 페이지를 site/에 새로 쓴다(없으면 지금 만들어서). 내용 해시를 반환."""
+    import shutil
+
+    pages = site_pages() if pages is None else pages
+    shutil.rmtree(SITE_DIR, ignore_errors=True)  # 폐기된 토큰의 옛 페이지까지 지움
+    for rel, content in pages.items():
+        path = SITE_DIR / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    return site_hash(pages)
+
+
+def publish(env, dry=False):
+    """저장함 사이트를 만들고, 지난 업로드 이후 바뀌었으면 Cloudflare Pages에 올린다.
+    부가 기능이라 절대 예외를 밖으로 내지 않음. 실패하면 다음 실행에서 자동 재시도."""
+    if not site_url(env):
+        return
+    try:
+        if dry and env.get("TELEGRAM_CHAT_ID"):
+            get_token(env["TELEGRAM_CHAT_ID"])  # 미리보기용 본인 페이지
+        pages = site_pages()
+        h = site_hash(pages)
+        state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
+        if not dry and state.get("site_hash") == h:
+            return  # 바뀐 게 없으면 site/도 안 건드림 — 데몬이 30초마다 부르므로
+        build_site(pages)
+        if dry:
+            return
+        npx = env.get("NPX", "npx")
+        run_env = dict(
+            os.environ,
+            CLOUDFLARE_API_TOKEN=env.get("CLOUDFLARE_API_TOKEN", ""),
+            CLOUDFLARE_ACCOUNT_ID=env.get("CLOUDFLARE_ACCOUNT_ID", ""),
+            WRANGLER_SEND_METRICS="false",
+        )
+        if "/" in npx:
+            # launchd는 PATH가 짧아 node를 못 찾음 → npx가 있는 폴더를 앞에 붙임
+            run_env["PATH"] = str(Path(npx).parent) + ":" + run_env.get("PATH", "")
+        r = subprocess.run(
+            [
+                npx, "--yes", "wrangler@4", "pages", "deploy", str(SITE_DIR),
+                "--project-name", env.get("PAGES_PROJECT", "daily-news"),
+                "--branch", "main", "--commit-dirty=true",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=run_env,
+            cwd=str(Path(__file__).parent),  # launchd 기본 작업 폴더는 / — wrangler 임시 파일이 쓰기 실패하지 않게
+        )
+        if r.returncode != 0:
+            print(f"[warn] 저장함 업로드 실패: {(r.stderr or r.stdout)[-300:]}", file=sys.stderr)
+            return
+        # 업로드(최대 180초) 동안 데몬이 offset을 새로 썼을 수 있음 → 다시 읽고 site_hash만 바꿈
+        state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
+        state["site_hash"] = h
+        STATE_PATH.write_text(json.dumps(state))
+        print("[info] 저장함 업로드 완료", file=sys.stderr)
+    except Exception as e:
+        print(f"[warn] 저장함 업로드 실패: {e}", file=sys.stderr)
 
 
 def main():
@@ -1013,6 +1217,7 @@ def main():
                 answer_asks(env)  # 질문형 메시지 → 아카이브 검색 답변
             except Exception as e:
                 print(f"[warn] 질문 답변 실패: {e}", file=sys.stderr)
+        publish(env, dry)  # 🔖 저장이 들어왔으면 저장함 페이지 갱신
         return
     items = collect()
     if not items:
@@ -1048,14 +1253,29 @@ def main():
                 summary = f"- {it['desc'][:200]}"
             emoji = "🎲" if it.get("wild") else "📌"
             print(f"{emoji} {it['title']}\n\n{summary}\n\n🔗 {it['link']}", "\n" + "─" * 30)
+        publish(env, dry=True)  # 업로드 없이 site/에 본인 저장함 미리보기 생성
         return
     subs = load_subs(env)
+    site = site_url(env)  # 비어 있으면 🔖 저장·📚 저장함 기능 꺼짐
     summary_cache = {}  # 구독자끼리 겹치는 기사는 요약 재사용
+    one_cache = {}  # 한줄요약도 같은 방식으로 재사용
     archived = set()  # 이번 실행에서 아카이브에 쓴 기사 해시
     for cid in subs:
         picked = pick(items, chat_id=cid)  # 구독자별 취향으로 따로 선별
+        header_buttons = None
+        if site:
+            try:
+                header_buttons = [[{"text": "📚 내 저장함", "url": f"{site}/u/{get_token(cid)}/"}]]
+            except Exception as e:
+                # tokens.json이 깨져도(손으로 고치다 실수 등) 다이제스트는 버튼 없이 계속 발송
+                print(f"[warn] 저장함 링크 생성 실패 (chat {cid}): {e}", file=sys.stderr)
         try:
-            send_telegram(f"🗞 AI/개발 다이제스트 {date} — 오늘 {len(picked)}건", env, chat_id=cid)
+            send_telegram(
+                f"🗞 AI/개발 다이제스트 {date} — 오늘 {len(picked)}건",
+                env,
+                buttons=header_buttons,
+                chat_id=cid,
+            )
         except Exception as e:
             print(f"[warn] 헤더 전송 실패 (chat {cid}): {e}", file=sys.stderr)
             if any(s in str(e) for s in ("403", "chat not found", "blocked")):
@@ -1070,6 +1290,8 @@ def main():
                     print(f"[warn] 요약 실패 ({it['title'][:30]}): {e}", file=sys.stderr)
                     summary_cache[key] = f"- {it['desc'][:200]}"
             summary = summary_cache[key]
+            if site and key not in one_cache:
+                one_cache[key] = one_liner(it, summary)
             emoji = "🎲" if it.get("wild") else "📌"  # 와일드카드 = 취향 밖 기사 표시
             msg = f"{emoji} {it['title']}\n\n{summary}\n\n🔗 {it['link']}"
             h = title_hash(it["title"])
@@ -1077,6 +1299,8 @@ def main():
                 {"text": "👍 관심", "callback_data": f"g:{h}"},
                 {"text": "👎 별로", "callback_data": f"b:{h}"},
             ]]
+            if site:
+                buttons[0].append({"text": "🔖 저장", "callback_data": f"s:{h}"})
             try:
                 mid = send_telegram(msg, env, buttons=buttons, chat_id=cid)
             except Exception as e:
@@ -1087,13 +1311,27 @@ def main():
                 continue
             # mid = 구독자별 메시지의 message_id. 리액션(👍/⭐ 더블탭) 역추적용
             with SENTLOG_PATH.open("a") as f:
-                f.write(json.dumps({"hash": h, "title": it["title"], "link": it["link"], "mid": mid, "ts": datetime.now().isoformat()}, ensure_ascii=False) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "hash": h,
+                            "title": it["title"],
+                            "link": it["link"],
+                            "mid": mid,
+                            "ts": datetime.now().isoformat(),
+                            "one": one_cache.get(key, ""),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
             # 아카이브 — RAG 질문 검색용으로 보낸 기사 저장 (기사당 1줄)
             if h not in archived:
                 with ARCHIVE_PATH.open("a") as f:
                     f.write(json.dumps({"date": date, "hash": h, "title": it["title"], "link": it["link"], "desc": it["desc"]}, ensure_ascii=False) + "\n")
                 archived.add(h)
     SUBS_PATH.write_text(json.dumps(sorted(subs)))
+    publish(env)  # 새 구독자 토큰이 생겼으면 저장함 페이지 갱신
     print(f"전송 완료 ({len(items)}건, 구독자 {len(subs)}명)")
 
 

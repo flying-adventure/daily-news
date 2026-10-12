@@ -21,6 +21,7 @@ RSS 수집  →  로컬 LLM 선별·요약  →  텔레그램 발송  →  매�
 - **구독자**: 누구든 봇에게 `/start`하면 구독 — 소개 메시지를 보내고 다음날부터 다이제스트 수신. 봇 차단자는 자동 제외. 피드백은 발신자별로 구분해 모으되 취향 학습엔 소유자 것만 사용
 - **단어장**: 기사에 답장으로 모르는 단어를 남기면, LLM이 초보용 설명을 만들어 텔레그램으로 답장 + 옵시디언 볼트에 노트로 저장 (출처 링크 포함)
 - **실시간 응답**: `daemon.py` 상시 폴링 프로세스가 `/start` 환영, 버튼 확인, 단어 답장, 질문을 즉시 처리 (launchd `com.oscar.news-daemon`, KeepAlive)
+- **저장함 웹페이지**: 기사 밑 🔖 저장 → 사람별 비밀 주소(`/u/<토큰>/`)에 링크 + 한줄요약 목록. Cloudflare Pages(무료)에 바뀐 때만 자동 업로드 — 맥이 꺼져 있어도 열림. `SITE_URL`이 없으면 기능 전체 꺼짐
 - **실패 알림**: 실행이 죽으면 에러가 텔레그램으로 옴 — 조용한 실패 없음
 - **의존성**: 파이썬 표준 라이브러리 + `trafilatura` 하나
 
@@ -86,18 +87,30 @@ launchctl load ~/Library/LaunchAgents/com.example.news-digest.plist
 <key>StartInterval</key><integer>300</integer>
 ```
 
+(선택) 저장함 웹페이지 — Cloudflare 무료 계정이면 됨 (카드 등록·도메인 추가 불필요):
+
+```bash
+# .env에 SITE_URL, PAGES_PROJECT, CLOUDFLARE_API_TOKEN(권한: Account → Cloudflare Pages → Edit),
+# CLOUDFLARE_ACCOUNT_ID, NPX(which npx 결과) 추가 후 — 프로젝트는 처음 한 번만 생성
+set -a; source <(grep -E '^CLOUDFLARE_' .env); set +a
+npx --yes wrangler@4 pages project create daily-news --production-branch main
+```
+
+자기 도메인을 쓰려면 Pages 프로젝트의 Custom domains에 서브도메인을 추가하고, 도메인 업체 DNS에 `CNAME <서브도메인> → (Pages가 알려준 *.pages.dev 주소)`를 넣는다 — 프로젝트 이름이 이미 쓰이고 있으면 뒤에 글자가 붙으므로 꼭 대시보드에 나온 주소를 쓸 것.
+
 ## 최근 개선 (2026-10-12)
 
 - **구독자별 개인화 선별**: 구독자마다 자기 피드백으로 따로 선별 — 사람마다 다른 5개 수신. 겹치는 기사는 요약 캐시로 재사용
 - **피드백 중복 제거**: 같은 사람이 같은 기사에 연타/의견 변경(👍→👎)하면 최신 것만 유지 (`dedupe_ratings`)
 - **취향 주제 태그**: 피드백 기사마다 LLM이 주제 태그 2~4개 추출 → "좋아하는 주제: 보안(6), 오픈소스(3)" 형태로 집계해 선별 프롬프트에 주입. 제목 나열 대신 장기 취향(태그 카운트)+단기 취향(최근 제목) 조합
-- **⭐ 북마크 리액션**: 기사에 ⭐ 리액션 → "나중에 읽기" 목록에 저장
+- **~~⭐ 북마크 리액션~~ → 🔖 저장 버튼**: ⭐는 텔레그램이 허용하는 리액션이 아니라 애초에 누를 수 없었음 (아래 트러블슈팅) — 기사 밑 🔖 저장 버튼으로 대체
 - **요약 품질 evals** (`eval_summaries.py`): 고정 테스트셋 + LLM-as-judge 4개 기준 채점 (accuracy/format/coverage/korean, 1~5점). `build`로 테스트셋 생성, `run`으로 평가 — 프롬프트·모델 변경 시 점수 비교용. 첫 베이스라인: acc 5.0 / fmt 5.0 / cov 4.3 / kor 4.9
 - **정형 명령어**: `/skip 주제` → 그 주제 기사 제외, `/more 주제` → 우대 선별
 - **질문 답변 (RAG)**: 봇에 "기사 제목 뭐였지?"식 질문 → 아카이브 임베딩 검색(코사인 유사도 top3) → 근거 기사로 답변. 발송 기사는 `archive.jsonl`에 자동 축적
 - **상시 폴링 데몬** (`daemon.py`): launchd KeepAlive 상시 프로세스 — 5분 폴링 대체, getUpdates long-poll로 반응 즉시 처리
 - **그 외**: 요청사항 30일 유효기간, sent-log 2000건 상한, 가입 7일+무활동 구독자 1회 리마인드
 - **주간 리포트**: 일요일 오전에 지난 7일간 평가 수치·좋아한/싫어한 주제·북마크 목록을 사람별로 발송
+- **🔖 저장 + 저장함 웹페이지**: 기사 버튼에 🔖 저장, 다이제스트 첫 메시지에 📚 내 저장함 링크. 저장은 👍보다 강한 취향 신호로 선별·주제 태그에 반영
 
 ## 최근 개선 (2026-09-24)
 
@@ -129,6 +142,7 @@ launchctl load ~/Library/LaunchAgents/com.example.news-digest.plist
 | 버튼을 눌렀는데 피드백이 안 쌓임 | 새 글 없는 날 `collect()` early return으로 `collect_feedback` 스킵 + 텔레그램 미수집 업데이트 ~24시간 뒤 폐기 | 피드백 수집을 파이프라인 맨 앞, 무조건 실행으로 이동 |
 | 메시지 리액션(더블탭 👍)이 수집 안 됨 | `getUpdates`가 `message_reaction`을 기본값에서 제외 | `allowed_updates`에 3종 전부 명시 |
 | `/start`가 "사용자 요청사항"으로 들어감 | 명령어도 일반 메시지로 기록됨 | `/`로 시작하는 메시지는 피드백에서 제외 |
+| ⭐ 리액션 북마크가 하나도 안 쌓임 | ⭐는 텔레그램이 허용하는 리액션 이모지 목록(73개)에 없음 — 애초에 누를 수 없음 | 기사 버튼에 🔖 저장 추가, 같은 `bookmark` 라벨로 기록 |
 
 ## 로드맵
 
