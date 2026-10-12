@@ -820,6 +820,77 @@ def get_token(chat_id):
     return tokens[key]
 
 
+SITE_DIR = Path(__file__).parent / "site"
+
+
+def page_html(title, body):
+    return f"""<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>{title}</title>
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;max-width:680px;margin:0 auto;padding:20px 16px;line-height:1.6;color:#1a1a1a;background:#fafafa}}
+h1{{font-size:1.4rem}}
+h2{{font-size:.85rem;color:#888;margin:28px 0 4px;font-weight:600}}
+article{{padding:12px 0;border-bottom:1px solid #e5e5e5}}
+h3{{font-size:1rem;margin:0 0 4px}}
+p{{margin:0;color:#555}}
+a{{color:#1a5fd0;text-decoration:none}}
+@media (prefers-color-scheme:dark){{body{{color:#e8e8e8;background:#121212}}article{{border-color:#2a2a2a}}p{{color:#aaa}}a{{color:#8ab4ff}}}}
+</style></head><body>
+<h1>{title}</h1>
+{body}
+</body></html>
+"""
+
+
+def render_page(saves):
+    """저장 기록 목록 → 저장함 HTML. 최신 저장이 위, 날짜별로 묶음."""
+    import html
+
+    rows, day = [], None
+    for e in sorted(saves, key=lambda e: e["ts"], reverse=True):
+        if e["ts"][:10] != day:
+            day = e["ts"][:10]
+            rows.append(f"<h2>{day}</h2>")
+        title = html.escape(e["title"])
+        link = e.get("link", "")
+        # 제목·링크는 외부 RSS에서 온 값 — javascript: 주소가 우리 도메인에서 실행되지 않게 http(s)만 링크로
+        if link.startswith(("https://", "http://")):
+            title = f'<a href="{html.escape(link)}" target="_blank" rel="noopener noreferrer">{title}</a>'
+        rows.append(f"<article><h3>{title}</h3><p>{html.escape(e.get('one', ''))}</p></article>")
+    body = "\n".join(rows) or "<p>아직 저장한 기사가 없어요. 텔레그램에서 🔖 저장을 눌러보세요.</p>"
+    return page_html("📚 내 저장함", body)
+
+
+def build_site():
+    """tokens.json의 모든 사람에게 저장함 페이지를 site/에 새로 만든다. 내용 해시를 반환."""
+    import hashlib
+    import shutil
+
+    tokens = json.loads(TOKENS_PATH.read_text()) if TOKENS_PATH.exists() else {}
+    saves = {}
+    if RATINGS_PATH.exists():
+        for line in RATINGS_PATH.read_text().splitlines():
+            e = json.loads(line)
+            if e.get("label") == "bookmark":
+                saves.setdefault(str(e.get("chat")), []).append(e)
+    pages = {"index.html": page_html("daily-news", "<p>개인 저장함 주소는 텔레그램 봇이 보내드려요.</p>")}
+    for chat, token in tokens.items():
+        pages[f"u/{token}/index.html"] = render_page(saves.get(chat, []))
+    shutil.rmtree(SITE_DIR, ignore_errors=True)  # 폐기된 토큰의 옛 페이지까지 지움
+    h = hashlib.sha256()
+    for rel, content in sorted(pages.items()):
+        path = SITE_DIR / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        h.update(rel.encode() + content.encode())
+    return h.hexdigest()
+
+
 def main():
     dry = "--dry" in sys.argv
     env = load_env()

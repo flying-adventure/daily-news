@@ -214,6 +214,43 @@ def test_digest_without_valid_site_url_still_sends():
         assert all(b["text"] != "🔖 저장" for b in article_buttons[0]), article_buttons
 
 
+# ---- Task 4: 페이지 생성 ----
+
+
+def test_page_escapes_html_and_blocks_script_links():
+    setup()
+    page = digest.render_page([
+        {"ts": "2026-10-12T09:00:00", "title": "<script>alert(1)</script>", "link": "javascript:alert(1)", "one": "a & b"},
+        {"ts": "2026-10-13T09:00:00", "title": "새 기사", "link": "https://ex.com/?a=1&b=2", "one": "요약"},
+    ])
+    assert "<script>" not in page and "&lt;script&gt;" in page
+    assert "javascript:" not in page
+    assert 'href="https://ex.com/?a=1&amp;b=2"' in page
+    assert "a &amp; b" in page
+    assert page.index("2026-10-13") < page.index("2026-10-12")  # 최신 날짜가 위
+    assert '<meta name="robots" content="noindex">' in page
+    assert '<meta name="referrer" content="no-referrer">' in page
+
+
+def test_build_site_one_private_page_per_person():
+    setup()
+    me, friend = digest.get_token(111), digest.get_token(222)
+    write_jsonl(digest.RATINGS_PATH, [
+        {"ts": "2026-10-12T09:00:00", "label": "bookmark", "title": "내꺼", "link": "https://a", "one": "x", "chat": 111},
+        {"ts": "2026-10-12T09:00:00", "label": "good", "title": "좋아요만", "chat": 111},
+    ])
+    h1 = digest.build_site()
+    mine = (digest.SITE_DIR / f"u/{me}/index.html").read_text()
+    other = (digest.SITE_DIR / f"u/{friend}/index.html").read_text()
+    assert "내꺼" in mine and "좋아요만" not in mine
+    assert "내꺼" not in other and "아직 저장한 기사가 없어요" in other
+    assert (digest.SITE_DIR / "index.html").exists()
+    assert digest.build_site() == h1  # 내용이 같으면 해시도 같음
+    digest.TOKENS_PATH.write_text(json.dumps({"111": me}))  # 친구 토큰 폐기
+    assert digest.build_site() != h1
+    assert not (digest.SITE_DIR / f"u/{friend}").exists()  # 옛 주소 페이지는 사라짐
+
+
 if __name__ == "__main__":
     names = sys.argv[1:]
     tests = [v for k, v in list(globals().items()) if k.startswith("test_") and (not names or k in names)]
