@@ -22,6 +22,10 @@ def main():
         try:
             digest.collect_feedback(env, timeout=30)  # long-poll — 오면 즉시 리턴
             digest.dedupe_ratings()
+            try:
+                digest.publish(env)  # 🔖 저장이 들어왔으면 저장함 페이지 갱신 (안 바뀌면 아무것도 안 함)
+            except Exception as e:
+                print(f"[warn] 저장함 갱신 실패: {e}", file=sys.stderr, flush=True)
             now = datetime.now()
             if now.weekday() == 6 and now.hour >= 9:
                 digest.send_weekly_report(env)  # weekly.json이 중복 발송 막음

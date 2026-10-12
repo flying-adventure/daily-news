@@ -44,6 +44,8 @@ def setup():
     digest.RATINGS_PATH = TMP / "ratings.jsonl"
     digest.SENTLOG_PATH = TMP / "sent-log.jsonl"
     digest.SUBS_PATH = TMP / "subscribers.json"
+    digest.SUBS_JOINED_PATH = TMP / "subs-joined.json"
+    digest.ARCHIVE_PATH = TMP / "archive.jsonl"
     digest.WEEKLY_PATH = TMP / "weekly.json"
     digest.TOKENS_PATH = TMP / "tokens.json"
     digest.SITE_DIR = TMP / "site"
@@ -185,6 +187,8 @@ def run_digest(site_url):
         ensure_model=lambda: None,
         process_vocab=lambda: None,
         tag_pending_ratings=lambda: None,
+        answer_asks=lambda env: None,  # RAG — 임베딩 서버(LM Studio) 호출
+        embed_archive=lambda: None,
         pick=lambda items, chat_id=None: [item],
         summarize_article=lambda it, body=None: "- 사실",
         one_liner=lambda it, summary: "한줄",
@@ -192,6 +196,7 @@ def run_digest(site_url):
         publish=lambda env, dry=False: published.append(dry),
     )
     digest.main()
+    assert EXTERNAL == [], EXTERNAL  # main 안의 try/except가 삼켜도 외부 호출 시도는 잡아냄
     return sent, published
 
 
@@ -208,12 +213,21 @@ def test_digest_adds_save_button_and_my_page_link():
 
 
 def test_digest_without_valid_site_url_still_sends():
-    for bad in (None, "news.example.com"):  # 없음 / https:// 빠짐
+    for bad in (None, "news.example.com", "https://"):  # 없음 / https:// 빠짐 / 호스트 없음
         setup()
         sent, _ = run_digest(bad)
         (_, header_buttons, _), (_, article_buttons, _) = sent
         assert header_buttons is None, header_buttons
         assert all(b["text"] != "🔖 저장" for b in article_buttons[0]), article_buttons
+
+
+def test_corrupt_tokens_still_sends_digest():
+    setup()
+    digest.TOKENS_PATH.write_text("{")  # 손으로 고치다 깨진 tokens.json
+    sent, _ = run_digest("https://news.example.com")
+    (header, header_buttons, _), (article, _, _) = sent
+    assert header.startswith("🗞") and header_buttons is None, (header, header_buttons)
+    assert article.startswith("📌 기사"), article
 
 
 # ---- Task 4: 페이지 생성 ----
@@ -303,6 +317,39 @@ def test_publish_never_raises():
     subprocess.run = hang
     digest.publish(ENV)  # 예외가 밖으로 새면 다이제스트·피드백이 같이 죽음
     assert not digest.STATE_PATH.exists()
+
+
+def test_unchanged_publish_does_not_touch_disk():
+    setup()
+    digest.get_token(111)
+    runs = []
+    subprocess.run = lambda cmd, **kw: runs.append(cmd) or Done(0)
+    digest.publish(ENV)  # 첫 업로드
+    marker = digest.SITE_DIR / "marker"
+    marker.write_text("x")
+    digest.publish(ENV)  # 데몬이 30초마다 부름 — 바뀐 게 없으면 site/를 다시 쓰지 않음
+    assert marker.exists() and len(runs) == 1, runs
+    write_jsonl(digest.RATINGS_PATH, [
+        {"ts": "2026-10-12T09:00:00", "label": "bookmark", "title": "새 저장", "link": "https://a", "one": "x", "chat": 111},
+    ])
+    digest.publish(ENV)  # 바뀌면 새로 쓰고 업로드
+    assert not marker.exists() and len(runs) == 2, runs
+
+
+def test_publish_keeps_newer_offset():
+    setup()
+    digest.get_token(111)
+    digest.STATE_PATH.write_text(json.dumps({"offset": 5}))
+
+    def slow_upload(cmd, **kw):
+        # 업로드하는 동안 데몬이 offset을 새로 씀
+        digest.STATE_PATH.write_text(json.dumps({"offset": 99}))
+        return Done(0)
+
+    subprocess.run = slow_upload
+    digest.publish(ENV)
+    state = json.loads(digest.STATE_PATH.read_text())
+    assert state["offset"] == 99 and state["site_hash"], state
 
 
 def test_dry_run_builds_own_preview_without_upload():

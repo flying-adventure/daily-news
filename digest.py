@@ -398,7 +398,8 @@ def collect_feedback(env, timeout=0):
                         data=urllib.parse.urlencode(
                             {
                                 "callback_query_id": cq["id"],
-                                "text": "저장됨 🔖" if label == "s" else "기록됨 ✅",
+                                # 실제로 북마크를 기록했을 때만 "저장됨" (모르는 기사면 일반 문구)
+                                "text": "저장됨 🔖" if label == "s" and h in sent else "기록됨 ✅",
                             }
                         ).encode(),
                         timeout=10,
@@ -693,7 +694,7 @@ def send_weekly_report(env):
             tops = ", ".join(t for t, _ in p["bt"].most_common(5))
             lines.append(f"👎 {p['bad']}건" + (f" — 싫어한 주제: {tops}" if tops else ""))
         if p["bm"]:
-            lines += ["", "⭐ 이번 주 북마크:"]
+            lines += ["", "🔖 이번 주 저장:"]
             lines += [f"• {t} {l}".rstrip() for t, l in p["bm"]]
         try:
             send_telegram("\n".join(lines), env, chat_id=cid)
@@ -1022,9 +1023,11 @@ TOKENS_PATH = Path(__file__).parent / "tokens.json"
 
 
 def site_url(env):
-    """저장함 사이트 주소. 없거나 http(s)로 시작하지 않으면 "" — 저장 기능 전체 꺼짐."""
+    """저장함 사이트 주소. 없거나 http(s)로 시작하지 않거나 호스트에 점(.)이 없으면 "" — 저장 기능 전체 꺼짐.
+    (텔레그램이 거부하는 주소면 헤더 전송이 실패해 그 사람 다이제스트 전체가 빠지므로 엄격히 검사)"""
     url = env.get("SITE_URL", "").strip().rstrip("/")
-    return url if url.startswith(("https://", "http://")) else ""
+    ok = url.startswith(("https://", "http://")) and "." in urllib.parse.urlsplit(url).netloc
+    return url if ok else ""
 
 
 def get_token(chat_id):
@@ -1085,11 +1088,8 @@ def render_page(saves):
     return page_html("📚 내 저장함", body)
 
 
-def build_site():
-    """tokens.json의 모든 사람에게 저장함 페이지를 site/에 새로 만든다. 내용 해시를 반환."""
-    import hashlib
-    import shutil
-
+def site_pages():
+    """tokens.json의 모든 사람 저장함 페이지를 메모리에서 만든다. {상대경로: HTML}"""
     tokens = json.loads(TOKENS_PATH.read_text()) if TOKENS_PATH.exists() else {}
     saves = {}
     if RATINGS_PATH.exists():
@@ -1100,14 +1100,30 @@ def build_site():
     pages = {"index.html": page_html("daily-news", "<p>개인 저장함 주소는 텔레그램 봇이 보내드려요.</p>")}
     for chat, token in tokens.items():
         pages[f"u/{token}/index.html"] = render_page(saves.get(chat, []))
-    shutil.rmtree(SITE_DIR, ignore_errors=True)  # 폐기된 토큰의 옛 페이지까지 지움
+    return pages
+
+
+def site_hash(pages):
+    """페이지 전체의 내용 해시 — 지난 업로드와 같은지 비교용."""
+    import hashlib
+
     h = hashlib.sha256()
     for rel, content in sorted(pages.items()):
+        h.update(rel.encode() + content.encode())
+    return h.hexdigest()
+
+
+def build_site(pages=None):
+    """저장함 페이지를 site/에 새로 쓴다(없으면 지금 만들어서). 내용 해시를 반환."""
+    import shutil
+
+    pages = site_pages() if pages is None else pages
+    shutil.rmtree(SITE_DIR, ignore_errors=True)  # 폐기된 토큰의 옛 페이지까지 지움
+    for rel, content in pages.items():
         path = SITE_DIR / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
-        h.update(rel.encode() + content.encode())
-    return h.hexdigest()
+    return site_hash(pages)
 
 
 def publish(env, dry=False):
@@ -1118,9 +1134,13 @@ def publish(env, dry=False):
     try:
         if dry and env.get("TELEGRAM_CHAT_ID"):
             get_token(env["TELEGRAM_CHAT_ID"])  # 미리보기용 본인 페이지
-        site_hash = build_site()
+        pages = site_pages()
+        h = site_hash(pages)
         state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
-        if dry or state.get("site_hash") == site_hash:
+        if not dry and state.get("site_hash") == h:
+            return  # 바뀐 게 없으면 site/도 안 건드림 — 데몬이 30초마다 부르므로
+        build_site(pages)
+        if dry:
             return
         npx = env.get("NPX", "npx")
         run_env = dict(
@@ -1147,7 +1167,9 @@ def publish(env, dry=False):
         if r.returncode != 0:
             print(f"[warn] 저장함 업로드 실패: {(r.stderr or r.stdout)[-300:]}", file=sys.stderr)
             return
-        state["site_hash"] = site_hash
+        # 업로드(최대 180초) 동안 데몬이 offset을 새로 썼을 수 있음 → 다시 읽고 site_hash만 바꿈
+        state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
+        state["site_hash"] = h
         STATE_PATH.write_text(json.dumps(state))
         print("[info] 저장함 업로드 완료", file=sys.stderr)
     except Exception as e:
@@ -1242,7 +1264,11 @@ def main():
         picked = pick(items, chat_id=cid)  # 구독자별 취향으로 따로 선별
         header_buttons = None
         if site:
-            header_buttons = [[{"text": "📚 내 저장함", "url": f"{site}/u/{get_token(cid)}/"}]]
+            try:
+                header_buttons = [[{"text": "📚 내 저장함", "url": f"{site}/u/{get_token(cid)}/"}]]
+            except Exception as e:
+                # tokens.json이 깨져도(손으로 고치다 실수 등) 다이제스트는 버튼 없이 계속 발송
+                print(f"[warn] 저장함 링크 생성 실패 (chat {cid}): {e}", file=sys.stderr)
         try:
             send_telegram(
                 f"🗞 AI/개발 다이제스트 {date} — 오늘 {len(picked)}건",
