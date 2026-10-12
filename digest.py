@@ -629,32 +629,31 @@ def send_weekly_report(env):
 
 
 def dedupe_ratings():
-    """ratings.jsonl에서 (사람, 기사) 단위로 good/bad 중복 제거 — 최신 것만 남김."""
+    """ratings.jsonl에서 (사람, 기사) 단위로 중복 제거 — 최신 것만 남김.
+    👍/👎는 서로 덮어쓰고(의견 변경), 🔖 북마크는 따로 하나만 남김."""
     if not RATINGS_PATH.exists():
         return
     lines = RATINGS_PATH.read_text().splitlines()
-    last = {}
-    for i, line in enumerate(lines):
-        e = json.loads(line)
-        if e.get("label") in ("good", "bad"):
-            last[(e.get("chat"), e["title"])] = i  # 같은 키면 나중 인덱스로 덮어씀
-    keep = [
-        line
-        for i, line in enumerate(lines)
-        if json.loads(line).get("label") not in ("good", "bad")
-        or last[(json.loads(line).get("chat"), json.loads(line)["title"])] == i
-    ]
+    group = {"good": "rate", "bad": "rate", "bookmark": "bookmark"}
+
+    def key(e):
+        g = group.get(e.get("label"))
+        return (g, e.get("chat"), e["title"]) if g else None
+
+    keys = [key(json.loads(line)) for line in lines]
+    last = {k: i for i, k in enumerate(keys) if k}  # 같은 키면 나중 인덱스로 덮어씀
+    keep = [line for i, (line, k) in enumerate(zip(lines, keys)) if not k or last[k] == i]
     if len(keep) != len(lines):
         RATINGS_PATH.write_text("\n".join(keep) + "\n")
 
 
 def tags_pending():
-    """태그가 안 달린 good/bad 피드백이 있으면 True."""
+    """태그가 안 달린 good/bad/bookmark 피드백이 있으면 True."""
     if not RATINGS_PATH.exists():
         return False
     for line in RATINGS_PATH.read_text().splitlines():
         e = json.loads(line)
-        if e.get("label") in ("good", "bad") and e.get("title") and "tags" not in e:
+        if e.get("label") in ("good", "bad", "bookmark") and e.get("title") and "tags" not in e:
             return True
     return False
 
@@ -667,7 +666,7 @@ def tag_pending_ratings():
     pending = [
         i
         for i, e in enumerate(entries)
-        if e.get("label") in ("good", "bad") and e.get("title") and "tags" not in e
+        if e.get("label") in ("good", "bad", "bookmark") and e.get("title") and "tags" not in e
     ]
     if not pending:
         return
@@ -753,7 +752,9 @@ def preference_block(chat_id=None):
         e_chat = str(e["chat"]) if e.get("chat") else own
         if e_chat != cid:
             continue
-        if e["label"] == "good":
+        if e["label"] in ("good", "bookmark"):  # 저장 = 👍보다 강한 관심 신호
+            if e["title"] in good:  # 👍와 저장이 겹치면 한 번만
+                continue
             good.append(e["title"])
             good_tags.update(e.get("tags", []))
         elif e["label"] == "bad":

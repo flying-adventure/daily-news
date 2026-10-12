@@ -104,6 +104,46 @@ def test_bookmark_button_records_bookmark():
     assert urllib.parse.parse_qs(data.decode())["text"] == ["저장됨 🔖"]
 
 
+# ---- Task 2: 중복 제거 + 취향 반영 ----
+
+
+def test_dedupe_keeps_one_bookmark_and_one_rating_per_person():
+    setup()
+    write_jsonl(digest.RATINGS_PATH, [
+        {"label": "good", "title": "A", "chat": 1},
+        {"label": "bookmark", "title": "A", "chat": 1, "link": "https://a", "one": "x"},
+        {"label": "bookmark", "title": "A", "chat": 1, "link": "https://a", "one": "x"},
+        {"label": "bad", "title": "A", "chat": 1},
+        {"label": "bookmark", "title": "A", "chat": 2, "link": "https://a", "one": "x"},
+        {"label": "note", "text": "메모", "chat": 1},
+    ])
+    digest.dedupe_ratings()
+    left = [(r["label"], r["chat"]) for r in read_jsonl(digest.RATINGS_PATH)]
+    assert left == [("bookmark", 1), ("bad", 1), ("bookmark", 2), ("note", 1)], left
+
+
+def test_bookmark_counts_as_liked_once():
+    setup()
+    write_jsonl(digest.RATINGS_PATH, [
+        {"label": "good", "title": "A", "chat": 111, "tags": ["보안"]},
+        {"label": "bookmark", "title": "A", "chat": 111, "tags": ["보안"]},
+        {"label": "bookmark", "title": "B", "chat": 111, "tags": ["AI업계"]},
+        {"label": "bookmark", "title": "C", "chat": 222},
+    ])
+    block = digest.preference_block(111)
+    assert "최근 좋아한 기사: A / B\n" in block, block
+    assert "보안(1)" in block and "AI업계(1)" in block, block
+
+
+def test_bookmarks_get_topic_tags():
+    setup()
+    write_jsonl(digest.RATINGS_PATH, [{"label": "bookmark", "title": "B", "chat": 111}])
+    assert digest.tags_pending()
+    patch(llm=lambda *a, **k: json.dumps({"items": [{"n": 1, "tags": ["AI업계"]}]}))
+    digest.tag_pending_ratings()
+    assert read_jsonl(digest.RATINGS_PATH)[0]["tags"] == ["AI업계"]
+
+
 if __name__ == "__main__":
     names = sys.argv[1:]
     tests = [v for k, v in list(globals().items()) if k.startswith("test_") and (not names or k in names)]
