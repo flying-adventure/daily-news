@@ -303,9 +303,9 @@ def test_room_page_escapes_data_and_shares_assets():
     assert (s["title"], s["link"], s["one"]) == (evil, "https://ex.com/?a=1&b=2", "a & b"), s
     assert '<meta name="robots" content="noindex">' in page
     assert '<meta name="referrer" content="no-referrer">' in page
-    assert 'src="../../assets/cat.js"' in page
-    assert (digest.SITE_DIR / "assets/cat.js").exists()
-    assert len(list((digest.SITE_DIR / "assets/cats").glob("*.png"))) == 24
+    assert 'src="../../assets/pet.js"' in page
+    assert (digest.SITE_DIR / "assets/pet.js").exists()
+    assert len(list((digest.SITE_DIR / "assets/pets").glob("*.png"))) == 96  # 6마리 x 16자세
 
 
 def test_build_site_one_private_page_per_person():
@@ -334,9 +334,9 @@ def test_asset_change_changes_hash():
     shutil.copytree(digest.WEB_DIR, web)
     patch(WEB_DIR=web)
     h1 = digest.build_site()
-    (web / "assets/cats/gureum-sit.png").write_bytes(b"\x89PNG new")  # 디자인 파일만 바뀜
+    (web / "assets/pets/gamja-sit.png").write_bytes(b"\x89PNG new")  # 디자인 파일만 바뀜
     assert digest.build_site() != h1  # → 재업로드 대상
-    assert (digest.SITE_DIR / "assets/cats/gureum-sit.png").read_bytes() == b"\x89PNG new"
+    assert (digest.SITE_DIR / "assets/pets/gamja-sit.png").read_bytes() == b"\x89PNG new"
 
 
 # ---- Task 5: 업로드 ----

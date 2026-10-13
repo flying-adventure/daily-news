@@ -39,10 +39,9 @@ a{color:inherit;text-decoration:none}
 .tab[aria-selected=true]{color:var(--accent);text-shadow:var(--glow);background:var(--surface);border-color:var(--line);box-shadow:inset 3px 0 0 var(--accent)}
 .ic{image-rendering:pixelated;flex:none}
 .tab .n{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--dim)}
-.catbox{margin:28px 0 0;padding:16px 14px 0;border-top:2px dashed var(--line);font-size:12px;color:var(--dim);line-height:1.7}
-.catbox b{color:var(--ink);font-weight:400}
-.catbox button{margin-top:10px;padding:6px 10px;border:2px solid var(--line);background:var(--surface);cursor:pointer;font-family:var(--px);font-size:12px}
-.catbox button:hover{border-color:var(--accent)}
+.petbox{margin:28px 0 0;padding:16px 14px 0;border-top:2px dashed var(--line);font-size:12px;color:var(--dim);line-height:1.7}
+.petbox button{padding:6px 10px;border:2px solid var(--line);background:var(--surface);cursor:pointer;font-family:var(--px);font-size:12px}
+.petbox button:hover{border-color:var(--accent)}
 
 .head h2{margin:0;font-family:var(--px);font-size:24px}
 .head .sub{margin-top:10px;font-family:var(--mono);font-size:12px;color:var(--dim)}
@@ -87,17 +86,17 @@ footer .follow{display:none;padding:6px 10px;border-color:var(--line);font-famil
 .follow[hidden]{display:none!important}
 footer .sp{flex:1}
 
-/* 고양이 */
-#cat{position:fixed;left:0;top:0;width:60px;height:52px;z-index:30;pointer-events:none;--f:1}
-#cat img{display:block;width:100%;height:100%;filter:drop-shadow(0 0 2px rgba(134,239,172,.35));transform:scaleX(var(--f));transform-origin:50% 100%}
-#cat.sleep img{animation:breathe 2.6s steps(2) infinite}
+/* 기니피그 */
+#pet{position:fixed;left:0;top:0;width:60px;height:52px;z-index:30;pointer-events:none;--f:1}
+#pet img{display:block;width:100%;height:100%;filter:drop-shadow(0 0 2px rgba(134,239,172,.35));transform:scaleX(var(--f));transform-origin:50% 100%}
+#pet.sleep img{animation:breathe 2.6s steps(2) infinite}
 @keyframes breathe{50%{transform:scaleX(var(--f)) scaleY(1.05)}}
-#cat .bub{position:absolute;left:62%;top:-16px;font-family:var(--px);font-size:13px;color:var(--ink);pointer-events:none;opacity:0}
-#cat.home .bub{color:#eafff2;text-shadow:1px 1px 0 rgba(0,0,0,.5)}
-#cat.sleep .bub{animation:zz 2.4s steps(6) infinite}
-#cat.sleep .bub::before{content:'z'}
-#cat.alert .bub{opacity:1;color:var(--accent)}
-#cat.alert .bub::before{content:'!'}
+#pet .bub{position:absolute;left:62%;top:-16px;font-family:var(--px);font-size:13px;color:var(--ink);pointer-events:none;opacity:0}
+#pet.home .bub{color:#eafff2;text-shadow:1px 1px 0 rgba(0,0,0,.5)}
+#pet.sleep .bub{animation:zz 2.4s steps(6) infinite}
+#pet.sleep .bub::before{content:'z'}
+#pet.say .bub{opacity:1;color:var(--accent);animation:none}
+#pet.say .bub::before{content:none}
 @keyframes zz{0%{opacity:0;transform:translate(0,4px)}25%{opacity:1}100%{opacity:0;transform:translate(10px,-14px)}}
 .heart{position:fixed;z-index:31;color:#ff6b8a;font-family:var(--px);font-size:16px;pointer-events:none;animation:up .9s steps(6) forwards}
 @keyframes up{to{opacity:0;transform:translateY(-28px)}}
@@ -107,7 +106,7 @@ footer .sp{flex:1}
   .banner .in{padding:20px 16px 0}
   .wrap{grid-template-columns:1fr;gap:0;padding:28px 16px 24px}
   .side{position:fixed;inset:auto 0 0 0;z-index:20;display:flex;padding:6px 6px calc(6px + env(safe-area-inset-bottom));background:var(--surface);border-top:2px solid var(--line)}
-  .lbl,.catbox,.tab .n{display:none}
+  .lbl,.petbox,.tab .n{display:none}
   .tab{flex:1;flex-direction:column;justify-content:center;gap:5px;padding:8px 4px;border:0;font-size:11px}
   .tab[aria-selected=true]{border:0;background:var(--soft);box-shadow:inset 0 3px 0 var(--accent)}
   .head h2{font-size:20px}
@@ -132,7 +131,7 @@ footer .sp{flex:1}
     <button class="tab" role="tab" data-tab="saved"><img class="ic" alt="" data-ic="saved"><span>저장함</span><b class="n"></b></button>
     <button class="tab" role="tab" data-tab="digest"><img class="ic" alt="" data-ic="digest"><span>지난 다이제스트</span><b class="n"></b></button>
     <button class="tab" role="tab" data-tab="liked"><img class="ic" alt="" data-ic="liked"><span>좋아요</span><b class="n"></b></button>
-    <div class="catbox">오늘의 냥이: <b id="catname"></b><br>지금: <b id="catst">자는 중</b><br><span id="cathint">커서를 움직이면 따라와요</span><br><button class="follow">따라오기 끄기</button></div>
+    <div class="petbox"><button class="follow">따라오기 끄기</button></div>
   </nav>
   <main id="main" role="tabpanel"></main>
 </div>
@@ -140,18 +139,18 @@ footer .sp{flex:1}
 <footer>
   <span id="pv" hidden>미리보기
   <button data-k="day">☀️</button><button data-k="sunset">🌇</button><button data-k="night">🌙</button><button data-k="rain">🌧</button>
-  <span style="margin-left:14px">냥이</span><span id="catpick"></span></span>
+  <span style="margin-left:14px">기니</span><span id="petpick"></span></span>
   <button class="follow"></button><span class="sp"></span><span>나만 보는 비밀 페이지</span>
 </footer>
 
-<div id="cat" aria-hidden="true"><img alt=""><span class="bub"></span></div>
+<div id="pet" aria-hidden="true"><img alt=""><span class="bub"></span></div>
 <canvas id="fx"></canvas>
 
 <script type="application/json" id="data">__DATA__</script>
-<script src="../../assets/cat.js"></script>
+<script src="../../assets/pet.js"></script>
 <script type="module">
 const D = JSON.parse(document.getElementById('data').textContent);
-// 주소 뒤 ?preview 면 시간대·고양이 바꿔보기 버튼 표시 (확인용)
+// 주소 뒤 ?preview 면 시간대·기니피그 바꿔보기 버튼 표시 (확인용)
 if (new URLSearchParams(location.search).has('preview')) document.getElementById('pv').hidden = false;
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const touch = matchMedia('(hover: none)').matches;
@@ -315,7 +314,7 @@ function drawSky(t){
     });
   });
   if (P.rain){ sg.fillStyle = 'rgba(170,190,225,.55)'; city.drops.forEach(d => { const x = (d.x + t / 40) % BW | 0, y = (d.y + t / 18) % BH | 0; sg.fillRect(x, y, 1, 2); }); }
-  // 창턱(고양이 자리) + 화분
+  // 창턱(기니피그 자리) + 화분
   sg.fillStyle = '#34413b'; sg.fillRect(0, base, BW, 1);
   sg.fillStyle = '#1f2824'; sg.fillRect(0, base + 1, BW, LEDGE - 2);
   sg.fillStyle = '#121715'; sg.fillRect(0, BH - 1, BW, 1);
@@ -349,91 +348,135 @@ const clock = document.getElementById('clock');
 const tickClock = () => { const d = new Date(); clock.textContent = String(d.getHours()).padStart(2, '0') + (d.getSeconds() % 2 ? ' ' : ':') + String(d.getMinutes()).padStart(2, '0'); };
 tickClock(); setInterval(tickClock, 1000);
 
-// ---------- 고양이: 배너 창턱에서 자다가, PC는 커서를 따라오고 휴대폰은 화면을 산책 ----------
-const catEl = document.getElementById('cat'), catImg = catEl.querySelector('img'), catSt = document.getElementById('catst');
-let CW = 60; const CH = 52;
-// 오늘의 고양이 (아래 '냥이' 버튼은 확인용 미리보기)
-let CI, catName = '';
-function useCat(i){
-  CI = catImages(CATS[i]); catImg.dataset.f = ''; catName = CATS[i].name;
-  // 그림 비율대로 고양이 너비 맞춤
-  const probe = new Image(); probe.onload = () => { CW = Math.round(probe.naturalWidth * CH / probe.naturalHeight); catEl.style.width = CW + 'px'; }; probe.src = CI.sit;
-  document.getElementById('catname').textContent = `${CATS[i].name} (${CATS[i].kind})`;
-  document.querySelectorAll('#catpick button').forEach((b, j) => b.classList.toggle('on', j === i));
+// ---------- 기니피그: 창턱에서 자다가 기분 따라 세수·상추 먹기·팝콘 점프, 커서는 가끔 따라감(휴대폰은 산책) ----------
+const petEl = document.getElementById('pet'), petImg = petEl.querySelector('img');
+let CW = 60, CH = 52;
+// 오늘의 기니피그 (아래 '냥이' 버튼은 확인용 미리보기)
+let CI, petName = '';
+function usePet(i){
+  CI = petImages(PETS[i]); petImg.dataset.f = ''; petName = PETS[i].name;
+  // 그림은 2배 해상도 — 절반 크기로 표시
+  const probe = new Image(); probe.onload = () => { CW = probe.naturalWidth / 2; CH = probe.naturalHeight / 2; petEl.style.width = CW + 'px'; petEl.style.height = CH + 'px'; }; probe.src = CI.sit;
+  document.querySelectorAll('#petpick button').forEach((b, j) => b.classList.toggle('on', j === i));
 }
-CATS.forEach((c, i) => { const b = el('button', null, c.name); b.addEventListener('click', () => useCat(i)); document.getElementById('catpick').append(b); });
-useCat(todayCat());
-let following = !reduce && localStorage.getItem('catFollow') !== 'off', mouse = null, wander = null, nextWander = 5;
-let state = 'sleep', face = -1, sitT = 0, alertT = 0, anim = 0, atHome = true;
+PETS.forEach((c, i) => { const b = el('button', null, c.name); b.addEventListener('click', () => usePet(i)); document.getElementById('petpick').append(b); });
+usePet(todayPet());
+let following = !reduce && localStorage.getItem('petFollow') !== 'off', mouse = null;
+// 기니피그 기분: act = 지금 하는 일, actT = 남은 시간(초), dest = 가는 곳('mouse'·'home'·{x,y}·null)
+let act = 'sleep', actT = 4 + Math.random() * 4, dest = null, run = false;
+let face = -1, anim = 0, atHome = true, alertT = 0, sayT = 0, checkT = 5, zoomies = 0;
+const bub = petEl.querySelector('.bub');
+const rnd = (a, b) => a + Math.random() * (b - a);
+const LAST = {sit: [2, 4], groom: [3, 5], eat: [4, 8], popcorn: [1.5, 2.5], sleep: [8, 15],
+  yawn: [1.6, 2.4], stand: [2.5, 4.5], loaf: [6, 12]};  // 일마다 하는 시간(초)
+// 혼자 있을 때 다음 할 일 고르는 비중 (합 100)
+const IDLE = [['groom', 15], ['eat', 15], ['loaf', 15], ['stand', 14], ['sit', 10], ['popcorn', 9], ['sleep', 8], ['yawn', 8], ['zoomies', 6]];
+// 커서가 멀리 가면 따라갈 확률 — 대체로 낮게, 일어서서 두리번거리거나 구경할 때만 조금 높게
+const COME = {sleep: .05, eat: .06, loaf: .08, yawn: .1, groom: .12, popcorn: .2, sit: .25, stand: .3};
+// 걷는 속도(px/초): 산책 / 커서 따라가기 / 톡 쳐서 부를 때
+const SPEED = {stroll: 40, follow: 70, run: 120};
 function home(){
   const r = banner.getBoundingClientRect(), ledge = r.top + (BH - LEDGE) * r.height / BH;
-  return {x: r.left + r.width * .72, y: ledge - CH + 3, home: true};
+  return {x: r.left + r.width * .72, y: ledge - CH + 3};
 }
-function target(){
-  if (!following) return home();
-  if (touch) return wander || home();
-  if (!mouse) return home();
+function nearMouse(){
   // 커서를 가리지 않게 커서 옆 아래에 멈춤
   const left = cx + CW / 2 < mouse.x;
   return {x: left ? mouse.x - CW - 10 : mouse.x + 14, y: mouse.y - CH + 12};
 }
+function startAct(a){ act = a; actT = rnd(...LAST[a]); anim = 0; if (a === 'popcorn') say('뀨!', .8); }
+// 우다다: 지금 자리 근처로 몇 번 후다닥
+function nearby(){ return {x: Math.min(innerWidth - CW - 8, Math.max(8, cx + rnd(-140, 140))), y: Math.min(innerHeight - CH - 8, Math.max(8, cy + rnd(-40, 40)))}; }
+function say(ch, s){ bub.textContent = ch; sayT = s; }
+function goTo(where, fast){
+  // 자다가 움직이면 먼저 깜짝
+  if (act === 'sleep'){ act = 'alert'; alertT = .5; say('!', .5); } else act = 'walk';
+  dest = where; run = !!fast; atHome = false;
+}
+// 하던 일이 끝나면 다음 할 일을 기분 따라 고름
+function nextIdle(){
+  const r = Math.random();
+  if (touch && following && r < .3) return goTo({x: rnd(12, innerWidth - CW - 12), y: rnd(80, Math.max(120, innerHeight - CH - 120))});
+  if (!atHome && r > .9) return goTo('home');  // 가끔 창턱으로 돌아가서 잠
+  if (act === 'yawn' && r < .5) return startAct('sleep');  // 하품 뒤엔 자주 잠듦
+  let w = Math.random() * 100, a = 'sit';
+  for (const [k, n] of IDLE) if ((w -= n) < 0){ a = k; break; }
+  if (a === 'zoomies'){ zoomies = 3 + (Math.random() * 3 | 0); say('뀨뀨!', .8); return goTo(nearby(), true); }
+  startAct(a);
+}
 let {x: cx, y: cy} = home(), last = performance.now();
-function wake(){ if (state === 'sleep'){ state = 'alert'; alertT = .45; atHome = false; } }
 function tick(now){
   const dt = Math.min((now - last) / 1000, .05); last = now;
-  const t = target(), dx = t.x - cx, dy = t.y - cy, d = Math.hypot(dx, dy);
-  if (state === 'sleep'){
-    if (atHome && t.home){ cx = t.x; cy = t.y; }       // 창턱에서 자면 배너와 함께 스크롤
-    else if (d > 40) wake();
-  } else if (state === 'alert'){
-    if ((alertT -= dt) <= 0) state = 'walk';
-  } else if (d > 3){
-    state = 'walk'; atHome = false;
-    const v = (touch && !t.run ? 95 : 250) * dt, s = Math.min(1, v / d);
-    cx += dx * s; cy += dy * s; anim += dt;
-    if (Math.abs(dx) > 1) face = dx > 0 ? 1 : -1;
+  anim += dt;
+  if (act === 'alert'){
+    if ((alertT -= dt) <= 0) act = 'walk';
+  } else if (act === 'walk'){
+    const t = dest === 'home' ? home() : dest === 'mouse' ? (mouse && following ? nearMouse() : null) : dest;
+    if (!t){ dest = null; startAct('sit'); }
+    else {
+      const dx = t.x - cx, dy = t.y - cy, d = Math.hypot(dx, dy);
+      const v = SPEED[run ? 'run' : dest === 'mouse' ? 'follow' : 'stroll'] * dt;
+      if (Math.abs(dx) > 1) face = dx > 0 ? 1 : -1;
+      if (d <= v){
+        cx = t.x; cy = t.y; atHome = dest === 'home'; dest = null;
+        if (zoomies > 0 && --zoomies > 0) goTo(nearby(), true);  // 우다다 다음 지점
+        else startAct(atHome ? 'sleep' : 'sit');
+        if (mouse && !touch && !atHome) face = mouse.x > cx + CW / 2 ? 1 : -1;  // 도착하면 커서 쪽을 봄
+      } else { cx += dx / d * v; cy += dy / d * v; }
+    }
   } else {
-    cx = t.x; cy = t.y;
-    if (state === 'walk'){ state = 'sit'; sitT = 0; }
-    if (mouse && !touch && !t.home) face = mouse.x > cx + CW / 2 ? 1 : -1;
-    if ((sitT += dt) > (t.home ? .5 : 5)){ state = 'sleep'; atHome = !!t.home; }
+    if (atHome){ const h = home(); cx = h.x; cy = h.y; }  // 창턱 위면 배너와 함께 스크롤
+    if (!reduce && (actT -= dt) <= 0) nextIdle();
+    // PC: 커서가 멀리 가면 몇 초에 한 번 "따라갈까?" 마음먹기 — 기분 따라 갈 때도, 안 갈 때도
+    if (!touch && following && mouse && (checkT -= dt) <= 0){
+      checkT = rnd(4, 8);
+      const n = nearMouse();
+      if (Math.hypot(n.x - cx, n.y - cy) > 120){
+        if (Math.random() < COME[act]) goTo('mouse');
+        else if (act === 'sit') face = mouse.x > cx + CW / 2 ? 1 : -1;  // 안 가고 쳐다보기만
+      }
+    }
   }
-  // 휴대폰: 쉬다가 가끔 화면 아무 데나 산책, 가끔은 창턱으로 귀가
-  if (touch && following && (state === 'sit' || state === 'sleep') && (nextWander -= dt) <= 0){
-    nextWander = 7 + Math.random() * 9;
-    wander = Math.random() < .25 ? null : {x: 12 + Math.random() * (innerWidth - CW - 24), y: 80 + Math.random() * Math.max(40, innerHeight - CH - 200)};
-  }
-  const fr = state === 'walk' ? (anim * 7 | 0) % 2 ? 'walkB' : 'walkA' : state === 'sleep' ? 'sleep' : 'sit';
-  if (catImg.dataset.f !== fr){ catImg.src = CI[fr]; catImg.dataset.f = fr; }
-  catEl.style.transform = `translate(${Math.round(cx)}px,${Math.round(cy)}px)`;
-  catEl.style.setProperty('--f', face);
-  catEl.className = state + (atHome ? ' home' : '');
-  catSt.textContent = {sleep:'자는 중 zZ', sit:'구경하는 중', walk: touch ? '산책 중' : '따라가는 중', alert:'깼다!'}[state];
+  if (sayT > 0 && (sayT -= dt) <= 0) bub.textContent = '';
+  // 자세별 그림: 걷기 초당 6장(아장아장), 세수 3장, 먹기 4장, 팝콘 3장(뛸 때 살짝 위로), 하품·두리번은 천천히, 식빵은 가끔 눈 깜빡
+  const two = (fps, a, b) => (anim * fps | 0) % 2 ? b : a;
+  const fr = act === 'walk' ? two(run ? 8 : 6, 'walkA', 'walkB')
+    : act === 'groom' ? two(3, 'groomA', 'groomB')
+    : act === 'eat' ? two(4, 'eatA', 'eatB')
+    : act === 'popcorn' ? two(3, 'popA', 'popB')
+    : act === 'yawn' ? two(1.2, 'yawnA', 'yawnB')
+    : act === 'stand' ? two(.7, 'standA', 'standB')
+    : act === 'loaf' ? (anim % 3.2 > 2.95 ? 'loafB' : 'loafA')
+    : act === 'sleep' ? 'sleep' : 'sit';
+  if (petImg.dataset.f !== fr){ petImg.src = CI[fr]; petImg.dataset.f = fr; }
+  petEl.style.transform = `translate(${Math.round(cx)}px,${Math.round(cy) - (fr === 'popB' ? 10 : 0)}px)`;
+  petEl.style.setProperty('--f', face);
+  petEl.className = act + (atHome ? ' home' : '') + (sayT > 0 ? ' say' : '');
   requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);
 if (!touch) addEventListener('mousemove', e => { mouse = {x: e.clientX, y: e.clientY}; }, {passive: true});
 document.documentElement.addEventListener('mouseleave', () => { mouse = null; });
-// 고양이는 클릭을 가로채지 않음(밑의 기사가 그대로 눌림). 기사·버튼이 아닌 곳에서 고양이를 누르면 하트
+// 기니피그는 클릭을 가로채지 않음(밑의 기사가 그대로 눌림). 기사·버튼이 아닌 곳에서 기니피그를 누르면 하트
 document.addEventListener('click', e => {
   if (e.target.closest('a,button,summary')) return;
-  const r = catEl.getBoundingClientRect();
+  const r = petEl.getBoundingClientRect();
   if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom){
-    wake();
-    const h = el('span', 'heart', '♥ ' + catName); h.style.left = cx + CW / 2 + 'px'; h.style.top = cy - 6 + 'px';
+    if (act === 'sleep'){ startAct('sit'); atHome = false; say('!', .6); }
+    const h = el('span', 'heart', '♥ ' + petName); h.style.left = cx + CW / 2 + 'px'; h.style.top = cy - 6 + 'px';
     document.body.append(h); setTimeout(() => h.remove(), 900);
   } else if (touch && following){
-    // 휴대폰: 빈 곳을 톡 치면 그쪽으로 달려옴
-    wander = {x: e.clientX - CW / 2, y: e.clientY - CH + 8, run: true}; nextWander = 9; wake();
+    // 휴대폰: 빈 곳을 톡 치면 올 때도 있고, 못 본 척할 때도 있음
+    if (Math.random() < .65) goTo({x: e.clientX - CW / 2, y: e.clientY - CH + 8}, true);
+    else say('…', 1.2);
   }
 });
 // 따라오기 토글: PC는 왼쪽 상자, 휴대폰은 아래쪽(footer)에 있음
 const followBtns = document.querySelectorAll('.follow');
-document.getElementById('cathint').textContent = touch ? '화면을 톡 치면 달려와요' : '커서를 움직이면 따라와요';
-const followText = () => followBtns.forEach(b => { b.textContent = (touch ? '냥이 산책 ' : '따라오기 ') + (following ? '끄기' : '켜기'); });
+const followText = () => followBtns.forEach(b => { b.textContent = (touch ? '산책 ' : '따라오기 ') + (following ? '끄기' : '켜기'); });
 followText();
 // 끄기/켜기는 이 브라우저에 기억
-followBtns.forEach(b => b.addEventListener('click', () => { following = !following; localStorage.setItem('catFollow', following ? 'on' : 'off'); followText(); }));
+followBtns.forEach(b => b.addEventListener('click', () => { following = !following; localStorage.setItem('petFollow', following ? 'on' : 'off'); followText(); }));
 if (reduce) followBtns.forEach(b => { b.hidden = true; });
 </script>
 </body>
