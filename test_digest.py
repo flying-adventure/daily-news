@@ -9,6 +9,7 @@ import sys
 import tempfile
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import digest
@@ -205,10 +206,12 @@ def test_digest_adds_save_button_and_my_page_link():
     sent, published = run_digest("https://news.example.com/")
     (_, header_buttons, _), (_, article_buttons, _) = sent
     token = json.loads(digest.TOKENS_PATH.read_text())["111"]
-    assert header_buttons == [[{"text": "📚 내 저장함", "url": f"https://news.example.com/u/{token}/"}]]
+    assert header_buttons == [[{"text": "🏠 내 뉴스방", "url": f"https://news.example.com/u/{token}/"}]]
     assert {"text": "🔖 저장", "callback_data": "s:" + digest.title_hash("기사")} in article_buttons[0]
     log = read_jsonl(digest.SENTLOG_PATH)[-1]
     assert (log["link"], log["one"], log["mid"]) == ("https://ex.com/1", "한줄", 77), log
+    # 지난 다이제스트 탭용: 누구에게, 어디 기사를, 취향 밖인지
+    assert (log["chat"], log["source"], log["wild"]) == (111, "HN", False), log
     assert published == [False]
 
 
@@ -228,6 +231,52 @@ def test_corrupt_tokens_still_sends_digest():
     (header, header_buttons, _), (article, _, _) = sent
     assert header.startswith("🗞") and header_buttons is None, (header, header_buttons)
     assert article.startswith("📌 기사"), article
+
+
+# ---- 뉴스방 데이터 ----
+
+
+def test_room_data_per_person():
+    setup()
+    digest.ENV_PATH.write_text("TELEGRAM_TOKEN=x\nTELEGRAM_CHAT_ID=111\nSITE_NAME=오스카\n")
+    now = datetime.now()
+    today, old = now.isoformat(), (now - timedelta(days=40)).isoformat()
+    H = digest.title_hash
+    write_jsonl(digest.SENTLOG_PATH, [
+        {"hash": H("A"), "title": "A", "link": "https://a", "one": "에이", "source": "HN", "ts": today, "chat": 111, "wild": False},
+        {"hash": H("A"), "title": "A", "link": "https://a", "one": "에이", "source": "HN", "ts": today, "chat": 111},  # 같은 날 중복
+        {"hash": H("W"), "title": "W", "link": "https://w", "one": "와일드", "source": "긱뉴스", "ts": today, "chat": 111, "wild": True},
+        {"hash": H("B"), "title": "B", "link": "https://b", "one": "비", "source": "HN", "ts": today, "chat": 222},
+        {"hash": H("OLD"), "title": "OLD", "link": "https://o", "ts": old, "chat": 111},  # 30일 지남
+        {"hash": "x", "title": "예전형식", "mid": 3},  # chat·ts 없는 옛 기록
+    ])
+    write_jsonl(digest.RATINGS_PATH, [
+        {"ts": today, "label": "bookmark", "title": "A", "link": "https://a", "one": "", "chat": 111},
+        {"ts": today, "label": "good", "title": "B", "link": "https://b", "chat": 222},
+        {"ts": today, "label": "good", "title": "옛좋아요", "link": "https://g"},  # chat 없음 = 본인
+        {"ts": today, "label": "good", "title": "W", "chat": 111},
+        {"ts": today, "label": "bad", "title": "W", "chat": 111},  # 👍 뒤 👎 → 좋아요에서 빠짐
+    ])
+    env = digest.load_env()
+    me, friend = digest.room_data(111, env), digest.room_data("222", env)
+    assert (me["name"], friend["name"]) == ("오스카", ""), (me["name"], friend["name"])
+    [s] = me["saved"]
+    assert (s["title"], s["one"], s["source"]) == ("A", "에이", "HN"), s  # 빈 한줄요약·출처는 sent-log로 보충
+    assert [x["title"] for x in me["liked"]] == ["옛좋아요"], me["liked"]
+    assert [x["title"] for x in friend["liked"]] == ["B"] and friend["saved"] == []
+    [day] = me["digests"]
+    assert day["date"] == today[:10] and [x["title"] for x in day["items"]] == ["A", "W"], day
+    assert day["items"][1]["wild"] is True and "wild" not in day["items"][0], day
+    assert [x["title"] for x in friend["digests"][0]["items"]] == ["B"]
+
+
+def test_room_data_drops_script_links():
+    setup()
+    write_jsonl(digest.RATINGS_PATH, [
+        {"ts": "2026-10-12T09:00:00", "label": "bookmark", "title": "T", "link": "javascript:alert(1)", "one": "x", "chat": 111},
+    ])
+    [s] = digest.room_data(111, digest.load_env())["saved"]
+    assert s["link"] == "", s
 
 
 # ---- Task 4: 페이지 생성 ----

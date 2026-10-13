@@ -1043,6 +1043,59 @@ def get_token(chat_id):
 
 
 SITE_DIR = Path(__file__).parent / "site"
+DIGEST_DAYS = 30  # 지난 다이제스트 탭에 보여줄 기간
+
+
+def _http(link):
+    """http(s) 주소만 통과 — javascript: 같은 주소가 우리 도메인에서 실행되지 않게."""
+    link = link or ""
+    return link if link.startswith(("https://", "http://")) else ""
+
+
+def room_data(chat, env):
+    """한 사람 뉴스방에 넣을 데이터: 저장함·좋아요·지난 다이제스트."""
+    own = str(env.get("TELEGRAM_CHAT_ID", ""))
+    chat = str(chat)
+    sent = [json.loads(l) for l in SENTLOG_PATH.read_text().splitlines()] if SENTLOG_PATH.exists() else []
+    by_hash = {e["hash"]: e for e in sent}  # 같은 기사는 나중 기록 — 한줄요약·출처 보충용
+
+    def item(e):
+        s = by_hash.get(title_hash(e["title"]), {})
+        out = {
+            "title": e["title"],
+            "link": _http(e.get("link") or s.get("link")),
+            "one": e.get("one") or s.get("one", ""),
+            "source": e.get("source") or s.get("source", ""),
+            "ts": e.get("ts", ""),
+        }
+        if e.get("wild"):
+            out["wild"] = True
+        return out
+
+    saved, rated = {}, {}
+    if RATINGS_PATH.exists():
+        for line in RATINGS_PATH.read_text().splitlines():
+            e = json.loads(line)
+            # chat 없는 예전 기록 = 본인 것 (preference_block과 같은 규칙)
+            if (str(e["chat"]) if e.get("chat") else own) != chat:
+                continue
+            if e.get("label") == "bookmark":
+                saved[e["title"]] = e
+            elif e.get("label") in ("good", "bad"):
+                rated.pop(e["title"], None)  # 마지막 평가만 남기고 순서도 최신으로
+                rated[e["title"]] = e
+    cutoff = (datetime.now() - timedelta(days=DIGEST_DAYS)).date().isoformat()
+    days = {}
+    for e in sent:
+        if str(e.get("chat", "")) != chat or e.get("ts", "")[:10] < cutoff:
+            continue
+        days.setdefault(e["ts"][:10], {})[e["hash"]] = item(e)  # 같은 날 같은 기사는 한 번
+    return {
+        "name": env.get("SITE_NAME", "") if chat == own else "",
+        "saved": [item(e) for e in saved.values()],
+        "liked": [item(e) for e in rated.values() if e["label"] == "good"],
+        "digests": [{"date": d, "items": list(v.values())} for d, v in sorted(days.items(), reverse=True)],
+    }
 
 
 def page_html(title, body):
@@ -1265,7 +1318,7 @@ def main():
         header_buttons = None
         if site:
             try:
-                header_buttons = [[{"text": "📚 내 저장함", "url": f"{site}/u/{get_token(cid)}/"}]]
+                header_buttons = [[{"text": "🏠 내 뉴스방", "url": f"{site}/u/{get_token(cid)}/"}]]
             except Exception as e:
                 # tokens.json이 깨져도(손으로 고치다 실수 등) 다이제스트는 버튼 없이 계속 발송
                 print(f"[warn] 저장함 링크 생성 실패 (chat {cid}): {e}", file=sys.stderr)
@@ -1320,6 +1373,9 @@ def main():
                             "mid": mid,
                             "ts": datetime.now().isoformat(),
                             "one": one_cache.get(key, ""),
+                            "chat": cid,  # 지난 다이제스트 탭: 누구에게 보냈는지
+                            "source": it.get("source", ""),
+                            "wild": bool(it.get("wild")),
                         },
                         ensure_ascii=False,
                     )
