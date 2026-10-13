@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -1043,63 +1044,94 @@ def get_token(chat_id):
 
 
 SITE_DIR = Path(__file__).parent / "site"
+DIGEST_DAYS = 30  # 지난 다이제스트 탭에 보여줄 기간
+UPLOAD_GAP = 120  # 업로드 사이 최소 간격(초) — 👍 연타 때 데몬이 업로드(수십 초)에 계속 붙잡히지 않게
 
 
-def page_html(title, body):
-    return f"""<!doctype html>
+def _http(link):
+    """http(s) 주소만 통과 — javascript: 같은 주소가 우리 도메인에서 실행되지 않게."""
+    link = link or ""
+    return link if link.startswith(("https://", "http://")) else ""
+
+
+def room_data(chat, env):
+    """한 사람 뉴스방에 넣을 데이터: 저장함·좋아요·지난 다이제스트."""
+    own = str(env.get("TELEGRAM_CHAT_ID", ""))
+    chat = str(chat)
+    sent = [json.loads(l) for l in SENTLOG_PATH.read_text().splitlines()] if SENTLOG_PATH.exists() else []
+    by_hash = {e["hash"]: e for e in sent}  # 같은 기사는 나중 기록 — 한줄요약·출처 보충용
+
+    def item(e):
+        s = by_hash.get(title_hash(e["title"]), {})
+        out = {
+            "title": e["title"],
+            "link": _http(e.get("link") or s.get("link")),
+            "one": e.get("one") or s.get("one", ""),
+            "source": e.get("source") or s.get("source", ""),
+            "ts": e.get("ts", ""),
+        }
+        if e.get("wild"):
+            out["wild"] = True
+        return out
+
+    saved, rated = {}, {}
+    if RATINGS_PATH.exists():
+        for line in RATINGS_PATH.read_text().splitlines():
+            e = json.loads(line)
+            # chat 없는 예전 기록 = 본인 것 (preference_block과 같은 규칙)
+            if (str(e["chat"]) if e.get("chat") else own) != chat:
+                continue
+            if e.get("label") == "bookmark":
+                saved[e["title"]] = e
+            elif e.get("label") in ("good", "bad"):
+                rated.pop(e["title"], None)  # 마지막 평가만 남기고 순서도 최신으로
+                rated[e["title"]] = e
+    cutoff = (datetime.now() - timedelta(days=DIGEST_DAYS)).date().isoformat()
+    days = {}
+    for e in sent:
+        if str(e.get("chat", "")) != chat or e.get("ts", "")[:10] < cutoff:
+            continue
+        days.setdefault(e["ts"][:10], {})[e["hash"]] = item(e)  # 같은 날 같은 기사는 한 번
+    return {
+        "name": env.get("SITE_NAME", "") if chat == own else "",
+        "saved": [item(e) for e in saved.values()],
+        "liked": [item(e) for e in rated.values() if e["label"] == "good"],
+        "digests": [{"date": d, "items": list(v.values())} for d, v in sorted(days.items(), reverse=True)],
+    }
+
+
+WEB_DIR = Path(__file__).parent / "web"  # 뉴스방 틀(room.html)과 공용 자산(assets/)
+
+# 루트 주소 안내 페이지 (개인 페이지는 /u/<token>/)
+INDEX_HTML = """<!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <meta name="referrer" content="no-referrer">
-<title>{title}</title>
-<style>
-body{{font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;max-width:680px;margin:0 auto;padding:20px 16px;line-height:1.6;color:#1a1a1a;background:#fafafa}}
-h1{{font-size:1.4rem}}
-h2{{font-size:.85rem;color:#888;margin:28px 0 4px;font-weight:600}}
-article{{padding:12px 0;border-bottom:1px solid #e5e5e5}}
-h3{{font-size:1rem;margin:0 0 4px}}
-p{{margin:0;color:#555}}
-a{{color:#1a5fd0;text-decoration:none}}
-@media (prefers-color-scheme:dark){{body{{color:#e8e8e8;background:#121212}}article{{border-color:#2a2a2a}}p{{color:#aaa}}a{{color:#8ab4ff}}}}
-</style></head><body>
-<h1>{title}</h1>
-{body}
-</body></html>
+<title>뉴스방</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0e0d;color:#d9e6df;font-family:ui-monospace,monospace}b{color:#4ade80}</style>
+</head><body><p><b>$</b> 개인 뉴스방 주소는 텔레그램 봇이 보내드려요.</p></body></html>
 """
 
 
-def render_page(saves):
-    """저장 기록 목록 → 저장함 HTML. 최신 저장이 위, 날짜별로 묶음."""
-    import html
-
-    rows, day = [], None
-    for e in sorted(saves, key=lambda e: e["ts"], reverse=True):
-        if e["ts"][:10] != day:
-            day = e["ts"][:10]
-            rows.append(f"<h2>{day}</h2>")
-        title = html.escape(e["title"])
-        link = e.get("link", "")
-        # 제목·링크는 외부 RSS에서 온 값 — javascript: 주소가 우리 도메인에서 실행되지 않게 http(s)만 링크로
-        if link.startswith(("https://", "http://")):
-            title = f'<a href="{html.escape(link)}" target="_blank" rel="noopener noreferrer">{title}</a>'
-        rows.append(f"<article><h3>{title}</h3><p>{html.escape(e.get('one', ''))}</p></article>")
-    body = "\n".join(rows) or "<p>아직 저장한 기사가 없어요. 텔레그램에서 🔖 저장을 눌러보세요.</p>"
-    return page_html("📚 내 저장함", body)
+def room_html(data):
+    """뉴스방 틀에 한 사람 데이터를 넣는다. < 를 \\u003c로 바꿔 </script>로 태그를 탈출하지 못하게."""
+    blob = json.dumps(data, ensure_ascii=False).replace("<", "\\u003c")
+    return (WEB_DIR / "room.html").read_text().replace("__DATA__", blob)
 
 
-def site_pages():
-    """tokens.json의 모든 사람 저장함 페이지를 메모리에서 만든다. {상대경로: HTML}"""
+def site_pages(env=None):
+    """모든 사람의 뉴스방 페이지 + 공용 자산을 메모리에서 만든다. {상대경로: 내용(str 또는 bytes)}"""
+    env = load_env() if env is None else env
     tokens = json.loads(TOKENS_PATH.read_text()) if TOKENS_PATH.exists() else {}
-    saves = {}
-    if RATINGS_PATH.exists():
-        for line in RATINGS_PATH.read_text().splitlines():
-            e = json.loads(line)
-            if e.get("label") == "bookmark":
-                saves.setdefault(str(e.get("chat")), []).append(e)
-    pages = {"index.html": page_html("daily-news", "<p>개인 저장함 주소는 텔레그램 봇이 보내드려요.</p>")}
+    pages = {"index.html": INDEX_HTML}
+    assets = WEB_DIR / "assets"
+    for p in sorted(assets.rglob("*")):
+        if p.is_file() and not p.name.startswith("."):  # .DS_Store 같은 숨김 파일 제외
+            pages["assets/" + p.relative_to(assets).as_posix()] = p.read_bytes()
     for chat, token in tokens.items():
-        pages[f"u/{token}/index.html"] = render_page(saves.get(chat, []))
+        pages[f"u/{token}/index.html"] = room_html(room_data(chat, env))
     return pages
 
 
@@ -1109,7 +1141,7 @@ def site_hash(pages):
 
     h = hashlib.sha256()
     for rel, content in sorted(pages.items()):
-        h.update(rel.encode() + content.encode())
+        h.update(rel.encode() + (content if isinstance(content, bytes) else content.encode()))
     return h.hexdigest()
 
 
@@ -1122,7 +1154,10 @@ def build_site(pages=None):
     for rel, content in pages.items():
         path = SITE_DIR / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content)
     return site_hash(pages)
 
 
@@ -1134,11 +1169,13 @@ def publish(env, dry=False):
     try:
         if dry and env.get("TELEGRAM_CHAT_ID"):
             get_token(env["TELEGRAM_CHAT_ID"])  # 미리보기용 본인 페이지
-        pages = site_pages()
+        pages = site_pages(env)
         h = site_hash(pages)
         state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
         if not dry and state.get("site_hash") == h:
             return  # 바뀐 게 없으면 site/도 안 건드림 — 데몬이 30초마다 부르므로
+        if not dry and time.time() - state.get("site_uploaded_at", 0) < UPLOAD_GAP:
+            return  # 방금 올렸으면 다음 루프로 미룸 — 그사이 바뀐 건 그때 한 번에 올라감
         build_site(pages)
         if dry:
             return
@@ -1170,6 +1207,7 @@ def publish(env, dry=False):
         # 업로드(최대 180초) 동안 데몬이 offset을 새로 썼을 수 있음 → 다시 읽고 site_hash만 바꿈
         state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
         state["site_hash"] = h
+        state["site_uploaded_at"] = time.time()
         STATE_PATH.write_text(json.dumps(state))
         print("[info] 저장함 업로드 완료", file=sys.stderr)
     except Exception as e:
@@ -1265,7 +1303,7 @@ def main():
         header_buttons = None
         if site:
             try:
-                header_buttons = [[{"text": "📚 내 저장함", "url": f"{site}/u/{get_token(cid)}/"}]]
+                header_buttons = [[{"text": "🏠 내 뉴스방", "url": f"{site}/u/{get_token(cid)}/"}]]
             except Exception as e:
                 # tokens.json이 깨져도(손으로 고치다 실수 등) 다이제스트는 버튼 없이 계속 발송
                 print(f"[warn] 저장함 링크 생성 실패 (chat {cid}): {e}", file=sys.stderr)
@@ -1320,6 +1358,9 @@ def main():
                             "mid": mid,
                             "ts": datetime.now().isoformat(),
                             "one": one_cache.get(key, ""),
+                            "chat": cid,  # 지난 다이제스트 탭: 누구에게 보냈는지
+                            "source": it.get("source", ""),
+                            "wild": bool(it.get("wild")),
                         },
                         ensure_ascii=False,
                     )

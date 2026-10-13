@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>뉴스방</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/galmuri@latest/dist/galmuri.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<style>
+:root{--px:'Galmuri11',monospace;--mono:'GalmuriMono11','Galmuri11',monospace;--sans:'Pretendard Variable',Pretendard,system-ui,sans-serif}
+/* 밤·노을 = 따뜻한 다크, 낮 = 크림, 비 = 푸른 다크 */
+/* 어두운 바탕 + 터미널 초록 한 가지 테마 */
+body{--bg:#0b0e0d;--surface:#111614;--ink:#d9e6df;--dim:#6e8378;--line:#1d2622;--accent:#4ade80;--soft:#14201a;--glow:0 0 8px rgba(74,222,128,.35)}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);transition:background-color .8s,color .8s}
+button{font:inherit;color:inherit}
+a{color:inherit;text-decoration:none}
+
+/* 배너: 저해상도 캔버스를 키워서 픽셀 느낌 */
+.banner{position:relative;height:clamp(150px,22vw,230px);overflow:hidden;background:#0b1029}
+#sky{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated}
+.banner .in{position:relative;max-width:1040px;margin:0 auto;padding:clamp(20px,3vw,32px) 24px 0;display:flex;justify-content:space-between;align-items:flex-start;font-family:var(--px);color:#eafff2;text-shadow:2px 2px 0 rgba(0,0,0,.55)}
+.banner h1{margin:0;font-size:clamp(20px,2.8vw,28px);font-weight:700}
+.banner p{margin:10px 0 0;font-family:var(--mono);font-size:12px;opacity:.92}
+.cursor{display:inline-block;width:.5em;height:.95em;background:var(--accent);box-shadow:var(--glow);margin-left:6px;vertical-align:-2px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.clock{font-family:var(--mono);font-size:13px;opacity:.9;white-space:nowrap}
+.banner .stats{margin-top:4px;opacity:.75}
+
+/* 본문: 사이드 탭 + 목록 */
+.wrap{max-width:1040px;margin:0 auto;padding:40px 24px 48px;display:grid;grid-template-columns:200px 1fr;gap:48px}
+.side{position:sticky;top:24px;align-self:start;font-family:var(--px)}
+.lbl{font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:1px;margin:0 0 10px 14px}
+.tab{display:flex;align-items:center;gap:10px;width:100%;padding:11px 12px;border:2px solid transparent;background:none;cursor:pointer;color:var(--dim);font-size:14px;text-align:left;transition:color .2s}
+.tab:hover{color:var(--ink)}
+.tab[aria-selected=true]{color:var(--accent);text-shadow:var(--glow);background:var(--surface);border-color:var(--line);box-shadow:inset 3px 0 0 var(--accent)}
+.ic{image-rendering:pixelated;flex:none}
+.tab .n{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--dim)}
+.catbox{margin:28px 0 0;padding:16px 14px 0;border-top:2px dashed var(--line);font-size:12px;color:var(--dim);line-height:1.7}
+.catbox b{color:var(--ink);font-weight:400}
+.catbox button{margin-top:10px;padding:6px 10px;border:2px solid var(--line);background:var(--surface);cursor:pointer;font-family:var(--px);font-size:12px}
+.catbox button:hover{border-color:var(--accent)}
+
+.head h2{margin:0;font-family:var(--px);font-size:24px}
+.head .sub{margin-top:10px;font-family:var(--mono);font-size:12px;color:var(--dim)}
+.day{display:flex;align-items:center;gap:12px;margin:32px 0 12px;font-family:var(--mono);font-size:12px;color:var(--dim)}
+.day::after{content:'';flex:1;height:2px;background:repeating-linear-gradient(90deg,var(--line) 0 4px,transparent 4px 8px)}
+.list{margin-top:24px}
+.card{display:block;background:var(--surface);border:2px solid var(--line);padding:10px 14px;margin-bottom:6px;transition:transform .12s steps(2),box-shadow .12s steps(2),border-color .12s}
+a.card:hover{transform:translate(-3px,-3px);box-shadow:3px 3px 0 var(--accent);border-color:var(--accent)}
+.card .t{font-size:15px;font-weight:650;line-height:1.4;letter-spacing:-.2px}
+.card .o{margin-top:2px;font-size:13px;line-height:1.5;color:var(--dim)}
+.card .m{margin-top:5px;display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;color:var(--dim)}
+.dot{width:8px;height:8px;display:inline-block}
+.wild{margin-left:8px;padding:1px 5px;border:2px solid currentColor;font-family:var(--px);font-size:11px;font-weight:400;color:var(--accent);vertical-align:2px;white-space:nowrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px}
+.grid .card{margin:0}
+.empty{white-space:pre-line;margin-top:32px;padding:28px;border:2px dashed var(--line);font-family:var(--px);font-size:13px;color:var(--dim);line-height:1.8;text-align:center}
+
+/* 지난 다이제스트: 날짜별 접기 */
+details.dg{margin-top:12px;background:var(--surface);border:2px solid var(--line)}
+details.dg:first-of-type{margin-top:28px}
+.dg summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:12px;padding:15px 18px;font-family:var(--px);font-size:14px}
+.dg summary::-webkit-details-marker{display:none}
+.dg summary .c{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--dim)}
+.dg .chev{display:inline-block;color:var(--accent);transition:transform .2s steps(2)}
+.dg[open] .chev{transform:rotate(90deg)}
+.dg .rows{border-top:2px solid var(--line)}
+.dg[open] .rows{animation:drop .24s steps(4)}
+.dg .card{margin:0;border:0;border-bottom:1px solid var(--line)}
+.dg .card:last-child{border-bottom:0}
+.dg a.card:hover{transform:none;box-shadow:inset 3px 0 0 var(--accent);background:var(--soft)}
+@keyframes drop{from{opacity:0;transform:translateY(-6px)}}
+
+/* 화면 전환 */
+.rise{animation:rise .32s steps(4) both}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}}
+#fx{position:fixed;display:none;z-index:25;image-rendering:pixelated;pointer-events:none}
+
+footer{max-width:1040px;margin:0 auto;padding:0 24px 40px;display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;color:var(--dim)}
+footer button{padding:2px 5px;border:2px solid transparent;background:none;cursor:pointer}
+footer button.on{border-color:var(--accent)}
+footer .follow{display:none;padding:6px 10px;border-color:var(--line);font-family:var(--px)}
+.follow[hidden]{display:none!important}
+footer .sp{flex:1}
+
+/* 고양이 */
+#cat{position:fixed;left:0;top:0;width:60px;height:52px;z-index:30;pointer-events:none;--f:1}
+#cat img{display:block;width:100%;height:100%;filter:drop-shadow(0 0 2px rgba(134,239,172,.35));transform:scaleX(var(--f));transform-origin:50% 100%}
+#cat.sleep img{animation:breathe 2.6s steps(2) infinite}
+@keyframes breathe{50%{transform:scaleX(var(--f)) scaleY(1.05)}}
+#cat .bub{position:absolute;left:62%;top:-16px;font-family:var(--px);font-size:13px;color:var(--ink);pointer-events:none;opacity:0}
+#cat.home .bub{color:#eafff2;text-shadow:1px 1px 0 rgba(0,0,0,.5)}
+#cat.sleep .bub{animation:zz 2.4s steps(6) infinite}
+#cat.sleep .bub::before{content:'z'}
+#cat.alert .bub{opacity:1;color:var(--accent)}
+#cat.alert .bub::before{content:'!'}
+@keyframes zz{0%{opacity:0;transform:translate(0,4px)}25%{opacity:1}100%{opacity:0;transform:translate(10px,-14px)}}
+.heart{position:fixed;z-index:31;color:#ff6b8a;font-family:var(--px);font-size:16px;pointer-events:none;animation:up .9s steps(6) forwards}
+@keyframes up{to{opacity:0;transform:translateY(-28px)}}
+
+/* 휴대폰: 사이드 탭이 아래 탭바로 */
+@media (max-width:760px){
+  .banner .in{padding:20px 16px 0}
+  .wrap{grid-template-columns:1fr;gap:0;padding:28px 16px 24px}
+  .side{position:fixed;inset:auto 0 0 0;z-index:20;display:flex;padding:6px 6px calc(6px + env(safe-area-inset-bottom));background:var(--surface);border-top:2px solid var(--line)}
+  .lbl,.catbox,.tab .n{display:none}
+  .tab{flex:1;flex-direction:column;justify-content:center;gap:5px;padding:8px 4px;border:0;font-size:11px}
+  .tab[aria-selected=true]{border:0;background:var(--soft);box-shadow:inset 0 3px 0 var(--accent)}
+  .head h2{font-size:20px}
+  footer{padding:0 16px 104px}
+  footer .follow{display:inline-block}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<header class="banner" id="banner">
+  <canvas id="sky"></canvas>
+  <div class="in">
+    <div><h1><span id="ttl">나의 뉴스방</span><i class="cursor"></i></h1><p id="greet"></p><p class="stats" id="stats"></p></div>
+    <div class="clock" id="clock"></div>
+  </div>
+</header>
+
+<div class="wrap">
+  <nav class="side" role="tablist" aria-label="탭">
+    <div class="lbl">~/news</div>
+    <button class="tab" role="tab" data-tab="saved"><img class="ic" alt="" data-ic="saved"><span>저장함</span><b class="n"></b></button>
+    <button class="tab" role="tab" data-tab="digest"><img class="ic" alt="" data-ic="digest"><span>지난 다이제스트</span><b class="n"></b></button>
+    <button class="tab" role="tab" data-tab="liked"><img class="ic" alt="" data-ic="liked"><span>좋아요</span><b class="n"></b></button>
+    <div class="catbox">오늘의 냥이: <b id="catname"></b><br>지금: <b id="catst">자는 중</b><br><span id="cathint">커서를 움직이면 따라와요</span><br><button class="follow">따라오기 끄기</button></div>
+  </nav>
+  <main id="main" role="tabpanel"></main>
+</div>
+
+<footer>
+  <span id="pv" hidden>미리보기
+  <button data-k="day">☀️</button><button data-k="sunset">🌇</button><button data-k="night">🌙</button><button data-k="rain">🌧</button>
+  <span style="margin-left:14px">냥이</span><span id="catpick"></span></span>
+  <button class="follow"></button><span class="sp"></span><span>나만 보는 비밀 페이지</span>
+</footer>
+
+<div id="cat" aria-hidden="true"><img alt=""><span class="bub"></span></div>
+<canvas id="fx"></canvas>
+
+<script type="application/json" id="data">__DATA__</script>
+<script src="../../assets/cat.js"></script>
+<script type="module">
+const D = JSON.parse(document.getElementById('data').textContent);
+// 주소 뒤 ?preview 면 시간대·고양이 바꿔보기 버튼 표시 (확인용)
+if (new URLSearchParams(location.search).has('preview')) document.getElementById('pv').hidden = false;
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const touch = matchMedia('(hover: none)').matches;
+const narrow = () => innerWidth <= 760;
+const main = document.getElementById('main'), banner = document.getElementById('banner');
+
+// ---------- 공통 ----------
+function el(tag, cls, text){ const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+const WD = '일월화수목금토';
+const icon = k => { const i = el('img', 'ic'); i.alt = ''; i.src = ICONS[k].src; i.width = ICONS[k].w * 2; i.height = ICONS[k].h * 2; return i; };
+const fmtDay = d => { const x = new Date(d + 'T00:00:00'); return `${x.getMonth()+1}월 ${x.getDate()}일 (${WD[x.getDay()]})`; };
+const SRC_COL = ['#4ade80','#22d3ee','#a78bfa','#facc15','#f472b6'];
+const meta = (...parts) => parts.filter(Boolean).join(' · ');
+const srcColor = s => SRC_COL[[...(s || '')].reduce((h, c) => h + c.charCodeAt(0), 0) % SRC_COL.length];
+function card(a, meta){
+  const ok = /^https?:\/\//i.test(a.link || '');
+  const c = el(ok ? 'a' : 'div', 'card');
+  if (ok){ c.href = a.link; c.target = '_blank'; c.rel = 'noopener noreferrer'; }
+  const t = el('div', 't', a.title); if (a.wild) t.append(el('span', 'wild', '🎲 취향 밖'));
+  c.append(t); if (a.one) c.append(el('div', 'o', a.one));
+  const m = el('div', 'm'), dot = el('i', 'dot'); dot.style.background = srcColor(a.source);
+  m.append(dot, el('span', null, meta)); c.append(m);
+  return c;
+}
+
+// ---------- 탭 ----------
+const TABS = {
+  saved:  {name:'저장함', path:'~/saved', sub:'나중에 읽으려고 꽂아둔 기사', n:() => D.saved.length},
+  digest: {name:'지난 다이제스트', path:'~/mailbox', sub:'매일 아침 8시에 온 편지', n:() => D.digests.length},
+  liked:  {name:'좋아요', path:'~/liked', sub:'텔레그램에서 좋아요 누른 기사', n:() => D.liked.length},
+};
+const ORDER = Object.keys(TABS);
+let cur = null;
+function render(tab){
+  const T = TABS[tab], head = el('div', 'head');
+  head.append(el('h2', null, T.name), el('div', 'sub', `${T.path} · ${T.n()}${tab === 'digest' ? '통' : '개'} · ${T.sub}`));
+  main.replaceChildren(head);
+  let i = 0; const rise = n => { n.classList.add('rise'); n.style.animationDelay = (i++ * 45) + 'ms'; return n; };
+  if (tab === 'digest'){
+    if (!D.digests.length) return main.append(el('div', 'empty', '아직 우편함이 비어 있어요.\n내일 아침 8시에 첫 편지가 와요.'));
+    D.digests.forEach((d, k) => {
+      const box = rise(el('details', 'dg')); box.open = k === 0;
+      const s = el('summary'); s.append(el('span', 'chev', '▸'), icon('digest'), el('span', null, `${fmtDay(d.date)} 아침 편지`), el('span', 'c', d.items.length + '편'));
+      const rows = el('div', 'rows'); d.items.forEach(a => rows.append(card(a, a.source)));
+      box.append(s, rows); main.append(box);
+    });
+    return;
+  }
+  const arr = D[tab].slice().sort((x, y) => y.ts.localeCompare(x.ts));
+  if (!arr.length) return main.append(el('div', 'empty', tab === 'saved' ? '아직 저장한 기사가 없어요.\n텔레그램에서 🔖 저장을 눌러보세요.' : '아직 좋아요한 기사가 없어요.\n텔레그램에서 👍를 눌러보세요.'));
+  // 저장함: 날짜 구분 없이 최신순 한 줄 목록
+  if (tab === 'saved'){
+    const box = el('div', 'list'); main.append(box);
+    arr.forEach(a => box.append(rise(card(a, meta(a.source, a.ts && `${+a.ts.slice(5, 7)}/${+a.ts.slice(8, 10)}`)))));
+    return;
+  }
+  let day = null, box = null;
+  arr.forEach(a => {
+    const d = a.ts.slice(0, 10);
+    if (d !== day){ day = d; main.append(rise(el('div', 'day', d ? fmtDay(d) : '날짜 모름'))); box = el('div', tab === 'liked' ? 'grid' : ''); main.append(box); }
+    box.append(rise(card(a, meta(a.source, a.ts.slice(11, 16)))));
+  });
+}
+function select(tab){
+  if (tab === cur) return;
+  const dir = cur ? Math.sign(ORDER.indexOf(tab) - ORDER.indexOf(cur)) : 0;
+  document.querySelectorAll('.tab').forEach(b => b.setAttribute('aria-selected', b.dataset.tab === tab));
+  const first = cur === null; cur = tab;
+  if (first || reduce) return render(tab);
+  if (narrow()) slide(dir, () => render(tab)); else dissolve(main, () => render(tab));
+  if (narrow()) scrollTo({top: Math.min(scrollY, banner.offsetHeight)});
+}
+// 휴대폰: 탭 방향으로 밀어내기
+async function slide(dir, swap){
+  await main.animate([{opacity:1, transform:'none'}, {opacity:0, transform:`translateX(${-dir*18}px)`}], {duration:120, easing:'steps(3)'}).finished;
+  swap();
+  main.animate([{opacity:0, transform:`translateX(${dir*18}px)`}, {opacity:1, transform:'none'}], {duration:160, easing:'steps(4)'});
+}
+// 데스크톱: 픽셀 블록이 덮었다가 걷히는 전환
+const fx = document.getElementById('fx'), fg = fx.getContext('2d');
+function dissolve(target, swap, color){
+  const r = target.getBoundingClientRect(), top = Math.max(r.top, 0), bottom = Math.min(r.bottom, innerHeight);
+  if (bottom - top < 10) return swap();
+  const B = 14, cols = Math.ceil(r.width / B), rows = Math.ceil((bottom - top) / B);
+  Object.assign(fx.style, {display:'block', left:r.left + 'px', top:top + 'px', width:cols * B + 'px', height:rows * B + 'px'});
+  fx.width = cols; fx.height = rows;
+  const cells = [...Array(cols * rows).keys()].sort(() => Math.random() - .5), N = 6, per = Math.ceil(cells.length / N);
+  fg.fillStyle = color || getComputedStyle(document.body).getPropertyValue('--bg');
+  let f = 0;
+  const step = () => {
+    const part = cells.slice((f % N) * per, (f % N + 1) * per);
+    part.forEach(c => f < N ? fg.fillRect(c % cols, c / cols | 0, 1, 1) : fg.clearRect(c % cols, c / cols | 0, 1, 1));
+    if (++f === N) swap();
+    if (f < N * 2) setTimeout(step, 26); else fx.style.display = 'none';
+  };
+  step();
+}
+document.querySelectorAll('img.ic[data-ic]').forEach(i => i.replaceWith(icon(i.dataset.ic)));
+document.querySelectorAll('.tab').forEach(b => { b.querySelector('.n').textContent = TABS[b.dataset.tab].n(); b.addEventListener('click', () => select(b.dataset.tab)); });
+select(TABS[location.hash.slice(1)] ? location.hash.slice(1) : 'saved');
+
+// ---------- 배너 하늘 (시간대별) ----------
+const SKY = {
+  day:    {sky:['#7ccaf5','#9ad6f6','#b9e3f5','#d8eff2'], orb:{x:.86, y:.3, r:5, c:'#fff3b0'}, cloud:'#ffffff', clouds:4, far:'#a9c1d3', tower:'#8aa3b8', near:'#7d97ae', lit:0},
+  sunset: {sky:['#1e1838','#35265a','#5a3a7a','#9a5a92'], orb:{x:.3, y:.74, r:8, c:'#ffd9e6'}, cloud:'#7a4a86', clouds:3, far:'#2c2148', tower:'#3e2f60', near:'#1a1430', win:'#86efac', lit:.22},
+  night:  {sky:['#05070c','#080c14','#0b111c','#101826'], orb:{x:.86, y:.28, r:5, c:'#e8fff0', moon:1}, stars:1, far:'#0f1622', tower:'#22303f', near:'#080b12', win:'#86efac', lit:.32},
+  rain:   {sky:['#0d1117','#121820','#171f29','#1c2532'], cloud:'#262f3b', clouds:7, far:'#141b25', tower:'#243040', near:'#0b0f15', win:'#86efac', lit:.4, rain:1},
+};
+const sky = document.getElementById('sky'), sg = sky.getContext('2d');
+const LEDGE = 4;
+let PX = 4, BW = 0, BH = 0, city, scene;
+function rng(a){ return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function layoutSky(){
+  PX = narrow() ? 3 : 4;
+  BW = Math.ceil(banner.clientWidth / PX); BH = Math.ceil(banner.clientHeight / PX);
+  sky.width = BW; sky.height = BH;
+  const R = rng(11), base = BH - LEDGE;
+  city = {far:[], near:[], stars:[], clouds:[], drops:[]};
+  for (let x = 0; x < BW;){ const w = 3 + R() * 6 | 0; city.far.push({x, w, h: 6 + R() * base * .38 | 0}); x += w; }
+  for (let x = -2; x < BW;){
+    const w = 7 + R() * 10 | 0, h = 6 + R() * base * .26 | 0, win = [];
+    for (let y = 3; y < h - 1; y += 3) for (let wx = 2; wx < w - 1; wx += 3) win.push({x: wx, y, r: R(), ph: R()});
+    city.near.push({x, w, h, win}); x += w + (R() * 3 | 0);
+  }
+  for (let i = 0; i < BW * BH / 170; i++) city.stars.push({x: R() * BW | 0, y: R() * base * .55 | 0, ph: R() * 7});
+  for (let i = 0; i < 8; i++) city.clouds.push({x: R() * BW, y: 2 + R() * base * .3 | 0, w: 12 + R() * 18 | 0, v: .6 + R() * 1.2});
+  for (let i = 0; i < BW * BH / 45; i++) city.drops.push({x: R() * BW, y: R() * BH});
+}
+function disc(cx, cy, r){ for (let dy = -r; dy <= r; dy++){ const h = Math.floor(Math.sqrt(r * r - dy * dy)); sg.fillRect(cx - h, cy + dy, h * 2 + 1, 1); } }
+function drawSky(t){
+  const P = SKY[scene], base = BH - LEDGE, n = P.sky.length;
+  // 하늘: 띠 + 경계 디더링
+  P.sky.forEach((c, i) => { sg.fillStyle = c; sg.fillRect(0, i * base / n | 0, BW, Math.ceil(base / n) + 1); });
+  for (let i = 1; i < n; i++){ const y = i * base / n | 0; sg.fillStyle = P.sky[i - 1]; for (let x = y % 2; x < BW; x += 2) sg.fillRect(x, y, 1, 1); }
+  if (P.stars) city.stars.forEach(s => { if (Math.sin(t / 700 + s.ph) > -.35){ sg.fillStyle = '#fff6d6'; sg.fillRect(s.x, s.y, 1, 1); } });
+  if (P.orb){
+    const o = P.orb, x = o.x * BW | 0, y = o.y * base | 0;
+    sg.fillStyle = o.c; disc(x, y, o.r);
+    if (o.moon){ sg.fillStyle = P.sky[1]; disc(x + 3, y - 2, o.r - 1); }
+  }
+  if (P.cloud){
+    sg.fillStyle = P.cloud;
+    city.clouds.slice(0, P.clouds).forEach(c => {
+      const x = ((c.x + t / 1000 * c.v) % (BW + c.w)) - c.w | 0;
+      sg.fillRect(x + 3, c.y, c.w - 7, 1); sg.fillRect(x + 1, c.y + 1, c.w - 2, 1); sg.fillRect(x, c.y + 2, c.w, 2);
+    });
+  }
+  // 먼 스카이라인 + 남산타워
+  sg.fillStyle = P.far; city.far.forEach(b => sg.fillRect(b.x, base - b.h, b.w, b.h));
+  const tx = BW * .6 | 0, hill = Math.min(14, base * .28 | 0);
+  for (let dx = -22; dx <= 22; dx++){ const h = Math.round(hill * (1 - (dx / 22) ** 2)); sg.fillRect(tx + dx, base - h, 1, h); }
+  sg.fillStyle = P.tower; sg.fillRect(tx, base - hill - 16, 1, 16); sg.fillRect(tx - 1, base - hill - 12, 3, 2); sg.fillRect(tx, base - hill - 20, 1, 4);
+  if (P.lit && Math.sin(t / 500) > 0){ sg.fillStyle = '#ff5a5a'; sg.fillRect(tx, base - hill - 20, 1, 1); }
+  // 가까운 건물 + 창문 (가끔 켜졌다 꺼짐)
+  city.near.forEach(b => {
+    sg.fillStyle = P.near; sg.fillRect(b.x, base - b.h, b.w, b.h);
+    b.win.forEach(w => {
+      const on = (w.r < P.lit) !== (P.lit > 0 && Math.sin(t / 2500 + w.ph * 90) > .985);
+      sg.fillStyle = on ? P.win : shade(P.near);
+      sg.fillRect(b.x + w.x, base - b.h + w.y, 1, 1);
+    });
+  });
+  if (P.rain){ sg.fillStyle = 'rgba(170,190,225,.55)'; city.drops.forEach(d => { const x = (d.x + t / 40) % BW | 0, y = (d.y + t / 18) % BH | 0; sg.fillRect(x, y, 1, 2); }); }
+  // 창턱(고양이 자리) + 화분
+  sg.fillStyle = '#34413b'; sg.fillRect(0, base, BW, 1);
+  sg.fillStyle = '#1f2824'; sg.fillRect(0, base + 1, BW, LEDGE - 2);
+  sg.fillStyle = '#121715'; sg.fillRect(0, BH - 1, BW, 1);
+  for (let x = 13; x < BW; x += 26) sg.fillRect(x, base + 1, 1, LEDGE - 2);
+  const px = BW * .66 | 0;
+  sg.fillStyle = '#26312c'; sg.fillRect(px, base - 4, 5, 4); sg.fillStyle = '#3a4a42'; sg.fillRect(px - 1, base - 5, 7, 1);
+  sg.fillStyle = '#4ade80'; [[2,-6],[1,-7],[3,-7],[0,-8],[4,-8],[2,-8],[2,-9],[-1,-9],[5,-9]].forEach(([x, y]) => sg.fillRect(px + x, base + y, 1, 1));
+}
+const shade = c => { const v = parseInt(c.slice(1), 16), k = .78; return `rgb(${(v >> 16 & 255) * k | 0},${(v >> 8 & 255) * k | 0},${(v & 255) * k | 0})`; };
+// 시간대: 06~16 낮, 16~19 노을, 그 외 밤 (비·눈은 아래 날씨 확인으로)
+function setScene(k, anim){
+  const apply = () => { scene = k; document.body.dataset.scene = k; drawSky(performance.now()); };
+  document.querySelectorAll('footer button[data-k]').forEach(b => b.classList.toggle('on', b.dataset.k === k));
+  anim && !reduce ? dissolve(banner, apply, SKY[k].sky[1]) : apply();
+}
+const hr = new Date().getHours();
+layoutSky(); setScene(hr >= 6 && hr < 16 ? 'day' : hr >= 16 && hr < 19 ? 'sunset' : 'night');
+if (!reduce) setInterval(() => drawSky(performance.now()), 110);
+addEventListener('resize', () => { layoutSky(); drawSky(performance.now()); });
+document.querySelectorAll('footer button[data-k]').forEach(b => b.addEventListener('click', () => setScene(b.dataset.k, true)));
+// 서울 현재 날씨 코드 51 이상 = 이슬비·비·눈·소나기·뇌우 → 비 배너 (실패하면 시간대 그대로)
+fetch('https://api.open-meteo.com/v1/forecast?latitude=37.57&longitude=126.98&current=weather_code', {referrerPolicy: 'no-referrer'})
+  .then(r => r.json()).then(j => { if ((j.current || {}).weather_code >= 51) setScene('rain', true); }).catch(() => {});
+
+const GREET = hr >= 5 && hr < 11 ? '좋은 아침이에요' : hr < 17 && hr >= 11 ? '좋은 오후예요' : hr >= 17 && hr < 21 ? '좋은 저녁이에요' : '늦은 밤이에요';
+const TITLE = (D.name ? D.name + '의' : '나의') + ' 뉴스방';
+document.title = TITLE; document.getElementById('ttl').textContent = TITLE;
+document.getElementById('greet').textContent = D.name ? `${GREET}, ${D.name}` : GREET;
+document.getElementById('stats').textContent = `저장 ${D.saved.length} · 좋아요 ${D.liked.length} · 다음 편지 ${hr < 8 ? '오늘' : '내일'} 08:00`;
+const clock = document.getElementById('clock');
+const tickClock = () => { const d = new Date(); clock.textContent = String(d.getHours()).padStart(2, '0') + (d.getSeconds() % 2 ? ' ' : ':') + String(d.getMinutes()).padStart(2, '0'); };
+tickClock(); setInterval(tickClock, 1000);
+
+// ---------- 고양이: 배너 창턱에서 자다가, PC는 커서를 따라오고 휴대폰은 화면을 산책 ----------
+const catEl = document.getElementById('cat'), catImg = catEl.querySelector('img'), catSt = document.getElementById('catst');
+let CW = 60; const CH = 52;
+// 오늘의 고양이 (아래 '냥이' 버튼은 확인용 미리보기)
+let CI, catName = '';
+function useCat(i){
+  CI = catImages(CATS[i]); catImg.dataset.f = ''; catName = CATS[i].name;
+  // 그림 비율대로 고양이 너비 맞춤
+  const probe = new Image(); probe.onload = () => { CW = Math.round(probe.naturalWidth * CH / probe.naturalHeight); catEl.style.width = CW + 'px'; }; probe.src = CI.sit;
+  document.getElementById('catname').textContent = `${CATS[i].name} (${CATS[i].kind})`;
+  document.querySelectorAll('#catpick button').forEach((b, j) => b.classList.toggle('on', j === i));
+}
+CATS.forEach((c, i) => { const b = el('button', null, c.name); b.addEventListener('click', () => useCat(i)); document.getElementById('catpick').append(b); });
+useCat(todayCat());
+let following = !reduce && localStorage.getItem('catFollow') !== 'off', mouse = null, wander = null, nextWander = 5;
+let state = 'sleep', face = -1, sitT = 0, alertT = 0, anim = 0, atHome = true;
+function home(){
+  const r = banner.getBoundingClientRect(), ledge = r.top + (BH - LEDGE) * r.height / BH;
+  return {x: r.left + r.width * .72, y: ledge - CH + 3, home: true};
+}
+function target(){
+  if (!following) return home();
+  if (touch) return wander || home();
+  if (!mouse) return home();
+  // 커서를 가리지 않게 커서 옆 아래에 멈춤
+  const left = cx + CW / 2 < mouse.x;
+  return {x: left ? mouse.x - CW - 10 : mouse.x + 14, y: mouse.y - CH + 12};
+}
+let {x: cx, y: cy} = home(), last = performance.now();
+function wake(){ if (state === 'sleep'){ state = 'alert'; alertT = .45; atHome = false; } }
+function tick(now){
+  const dt = Math.min((now - last) / 1000, .05); last = now;
+  const t = target(), dx = t.x - cx, dy = t.y - cy, d = Math.hypot(dx, dy);
+  if (state === 'sleep'){
+    if (atHome && t.home){ cx = t.x; cy = t.y; }       // 창턱에서 자면 배너와 함께 스크롤
+    else if (d > 40) wake();
+  } else if (state === 'alert'){
+    if ((alertT -= dt) <= 0) state = 'walk';
+  } else if (d > 3){
+    state = 'walk'; atHome = false;
+    const v = (touch && !t.run ? 95 : 250) * dt, s = Math.min(1, v / d);
+    cx += dx * s; cy += dy * s; anim += dt;
+    if (Math.abs(dx) > 1) face = dx > 0 ? 1 : -1;
+  } else {
+    cx = t.x; cy = t.y;
+    if (state === 'walk'){ state = 'sit'; sitT = 0; }
+    if (mouse && !touch && !t.home) face = mouse.x > cx + CW / 2 ? 1 : -1;
+    if ((sitT += dt) > (t.home ? .5 : 5)){ state = 'sleep'; atHome = !!t.home; }
+  }
+  // 휴대폰: 쉬다가 가끔 화면 아무 데나 산책, 가끔은 창턱으로 귀가
+  if (touch && following && (state === 'sit' || state === 'sleep') && (nextWander -= dt) <= 0){
+    nextWander = 7 + Math.random() * 9;
+    wander = Math.random() < .25 ? null : {x: 12 + Math.random() * (innerWidth - CW - 24), y: 80 + Math.random() * Math.max(40, innerHeight - CH - 200)};
+  }
+  const fr = state === 'walk' ? (anim * 7 | 0) % 2 ? 'walkB' : 'walkA' : state === 'sleep' ? 'sleep' : 'sit';
+  if (catImg.dataset.f !== fr){ catImg.src = CI[fr]; catImg.dataset.f = fr; }
+  catEl.style.transform = `translate(${Math.round(cx)}px,${Math.round(cy)}px)`;
+  catEl.style.setProperty('--f', face);
+  catEl.className = state + (atHome ? ' home' : '');
+  catSt.textContent = {sleep:'자는 중 zZ', sit:'구경하는 중', walk: touch ? '산책 중' : '따라가는 중', alert:'깼다!'}[state];
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+if (!touch) addEventListener('mousemove', e => { mouse = {x: e.clientX, y: e.clientY}; }, {passive: true});
+document.documentElement.addEventListener('mouseleave', () => { mouse = null; });
+// 고양이는 클릭을 가로채지 않음(밑의 기사가 그대로 눌림). 기사·버튼이 아닌 곳에서 고양이를 누르면 하트
+document.addEventListener('click', e => {
+  if (e.target.closest('a,button,summary')) return;
+  const r = catEl.getBoundingClientRect();
+  if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom){
+    wake();
+    const h = el('span', 'heart', '♥ ' + catName); h.style.left = cx + CW / 2 + 'px'; h.style.top = cy - 6 + 'px';
+    document.body.append(h); setTimeout(() => h.remove(), 900);
+  } else if (touch && following){
+    // 휴대폰: 빈 곳을 톡 치면 그쪽으로 달려옴
+    wander = {x: e.clientX - CW / 2, y: e.clientY - CH + 8, run: true}; nextWander = 9; wake();
+  }
+});
+// 따라오기 토글: PC는 왼쪽 상자, 휴대폰은 아래쪽(footer)에 있음
+const followBtns = document.querySelectorAll('.follow');
+document.getElementById('cathint').textContent = touch ? '화면을 톡 치면 달려와요' : '커서를 움직이면 따라와요';
+const followText = () => followBtns.forEach(b => { b.textContent = (touch ? '냥이 산책 ' : '따라오기 ') + (following ? '끄기' : '켜기'); });
+followText();
+// 끄기/켜기는 이 브라우저에 기억
+followBtns.forEach(b => b.addEventListener('click', () => { following = !following; localStorage.setItem('catFollow', following ? 'on' : 'off'); followText(); }));
+if (reduce) followBtns.forEach(b => { b.hidden = true; });
+</script>
+</body>
+</html>

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import digest
@@ -205,10 +206,12 @@ def test_digest_adds_save_button_and_my_page_link():
     sent, published = run_digest("https://news.example.com/")
     (_, header_buttons, _), (_, article_buttons, _) = sent
     token = json.loads(digest.TOKENS_PATH.read_text())["111"]
-    assert header_buttons == [[{"text": "📚 내 저장함", "url": f"https://news.example.com/u/{token}/"}]]
+    assert header_buttons == [[{"text": "🏠 내 뉴스방", "url": f"https://news.example.com/u/{token}/"}]]
     assert {"text": "🔖 저장", "callback_data": "s:" + digest.title_hash("기사")} in article_buttons[0]
     log = read_jsonl(digest.SENTLOG_PATH)[-1]
     assert (log["link"], log["one"], log["mid"]) == ("https://ex.com/1", "한줄", 77), log
+    # 지난 다이제스트 탭용: 누구에게, 어디 기사를, 취향 밖인지
+    assert (log["chat"], log["source"], log["wild"]) == (111, "HN", False), log
     assert published == [False]
 
 
@@ -230,22 +233,79 @@ def test_corrupt_tokens_still_sends_digest():
     assert article.startswith("📌 기사"), article
 
 
+# ---- 뉴스방 데이터 ----
+
+
+def test_room_data_per_person():
+    setup()
+    digest.ENV_PATH.write_text("TELEGRAM_TOKEN=x\nTELEGRAM_CHAT_ID=111\nSITE_NAME=오스카\n")
+    now = datetime.now()
+    today, old = now.isoformat(), (now - timedelta(days=40)).isoformat()
+    H = digest.title_hash
+    write_jsonl(digest.SENTLOG_PATH, [
+        {"hash": H("A"), "title": "A", "link": "https://a", "one": "에이", "source": "HN", "ts": today, "chat": 111, "wild": False},
+        {"hash": H("A"), "title": "A", "link": "https://a", "one": "에이", "source": "HN", "ts": today, "chat": 111},  # 같은 날 중복
+        {"hash": H("W"), "title": "W", "link": "https://w", "one": "와일드", "source": "긱뉴스", "ts": today, "chat": 111, "wild": True},
+        {"hash": H("B"), "title": "B", "link": "https://b", "one": "비", "source": "HN", "ts": today, "chat": 222},
+        {"hash": H("OLD"), "title": "OLD", "link": "https://o", "ts": old, "chat": 111},  # 30일 지남
+        {"hash": "x", "title": "예전형식", "mid": 3},  # chat·ts 없는 옛 기록
+    ])
+    write_jsonl(digest.RATINGS_PATH, [
+        {"ts": today, "label": "bookmark", "title": "A", "link": "https://a", "one": "", "chat": 111},
+        {"ts": today, "label": "good", "title": "B", "link": "https://b", "chat": 222},
+        {"ts": today, "label": "good", "title": "옛좋아요", "link": "https://g"},  # chat 없음 = 본인
+        {"ts": today, "label": "good", "title": "W", "chat": 111},
+        {"ts": today, "label": "bad", "title": "W", "chat": 111},  # 👍 뒤 👎 → 좋아요에서 빠짐
+    ])
+    env = digest.load_env()
+    me, friend = digest.room_data(111, env), digest.room_data("222", env)
+    assert (me["name"], friend["name"]) == ("오스카", ""), (me["name"], friend["name"])
+    [s] = me["saved"]
+    assert (s["title"], s["one"], s["source"]) == ("A", "에이", "HN"), s  # 빈 한줄요약·출처는 sent-log로 보충
+    assert [x["title"] for x in me["liked"]] == ["옛좋아요"], me["liked"]
+    assert [x["title"] for x in friend["liked"]] == ["B"] and friend["saved"] == []
+    [day] = me["digests"]
+    assert day["date"] == today[:10] and [x["title"] for x in day["items"]] == ["A", "W"], day
+    assert day["items"][1]["wild"] is True and "wild" not in day["items"][0], day
+    assert [x["title"] for x in friend["digests"][0]["items"]] == ["B"]
+
+
+def test_room_data_drops_script_links():
+    setup()
+    write_jsonl(digest.RATINGS_PATH, [
+        {"ts": "2026-10-12T09:00:00", "label": "bookmark", "title": "T", "link": "javascript:alert(1)", "one": "x", "chat": 111},
+    ])
+    [s] = digest.room_data(111, digest.load_env())["saved"]
+    assert s["link"] == "", s
+
+
 # ---- Task 4: 페이지 생성 ----
 
 
-def test_page_escapes_html_and_blocks_script_links():
+def page_data(html):
+    """뉴스방 페이지에 박힌 데이터 JSON을 꺼낸다."""
+    tag = '<script type="application/json" id="data">'
+    start = html.index(tag) + len(tag)
+    return json.loads(html[start:html.index("</script>", start)])
+
+
+def test_room_page_escapes_data_and_shares_assets():
     setup()
-    page = digest.render_page([
-        {"ts": "2026-10-12T09:00:00", "title": "<script>alert(1)</script>", "link": "javascript:alert(1)", "one": "a & b"},
-        {"ts": "2026-10-13T09:00:00", "title": "새 기사", "link": "https://ex.com/?a=1&b=2", "one": "요약"},
+    me = digest.get_token(111)
+    evil = "</script><script>alert(1)</script>"
+    write_jsonl(digest.RATINGS_PATH, [
+        {"ts": "2026-10-12T09:00:00", "label": "bookmark", "title": evil, "link": "https://ex.com/?a=1&b=2", "one": "a & b", "chat": 111},
     ])
-    assert "<script>" not in page and "&lt;script&gt;" in page
-    assert "javascript:" not in page
-    assert 'href="https://ex.com/?a=1&amp;b=2"' in page
-    assert "a &amp; b" in page
-    assert page.index("2026-10-13") < page.index("2026-10-12")  # 최신 날짜가 위
+    digest.build_site()
+    page = (digest.SITE_DIR / f"u/{me}/index.html").read_text()
+    assert "</script><script>alert" not in page  # 데이터가 script 태그를 탈출 못 함
+    [s] = page_data(page)["saved"]
+    assert (s["title"], s["link"], s["one"]) == (evil, "https://ex.com/?a=1&b=2", "a & b"), s
     assert '<meta name="robots" content="noindex">' in page
     assert '<meta name="referrer" content="no-referrer">' in page
+    assert 'src="../../assets/cat.js"' in page
+    assert (digest.SITE_DIR / "assets/cat.js").exists()
+    assert len(list((digest.SITE_DIR / "assets/cats").glob("*.png"))) == 24
 
 
 def test_build_site_one_private_page_per_person():
@@ -253,18 +313,30 @@ def test_build_site_one_private_page_per_person():
     me, friend = digest.get_token(111), digest.get_token(222)
     write_jsonl(digest.RATINGS_PATH, [
         {"ts": "2026-10-12T09:00:00", "label": "bookmark", "title": "내꺼", "link": "https://a", "one": "x", "chat": 111},
-        {"ts": "2026-10-12T09:00:00", "label": "good", "title": "좋아요만", "chat": 111},
     ])
     h1 = digest.build_site()
-    mine = (digest.SITE_DIR / f"u/{me}/index.html").read_text()
+    mine = page_data((digest.SITE_DIR / f"u/{me}/index.html").read_text())
     other = (digest.SITE_DIR / f"u/{friend}/index.html").read_text()
-    assert "내꺼" in mine and "좋아요만" not in mine
-    assert "내꺼" not in other and "아직 저장한 기사가 없어요" in other
+    assert [s["title"] for s in mine["saved"]] == ["내꺼"], mine
+    assert page_data(other)["saved"] == [] and "내꺼" not in other
+    assert "오스카" not in other  # 틀에 특정 사람 이름이 박혀 있지 않음
     assert (digest.SITE_DIR / "index.html").exists()
     assert digest.build_site() == h1  # 내용이 같으면 해시도 같음
     digest.TOKENS_PATH.write_text(json.dumps({"111": me}))  # 친구 토큰 폐기
     assert digest.build_site() != h1
     assert not (digest.SITE_DIR / f"u/{friend}").exists()  # 옛 주소 페이지는 사라짐
+
+
+def test_asset_change_changes_hash():
+    setup()
+    digest.get_token(111)
+    web = TMP / "web"
+    shutil.copytree(digest.WEB_DIR, web)
+    patch(WEB_DIR=web)
+    h1 = digest.build_site()
+    (web / "assets/cats/gureum-sit.png").write_bytes(b"\x89PNG new")  # 디자인 파일만 바뀜
+    assert digest.build_site() != h1  # → 재업로드 대상
+    assert (digest.SITE_DIR / "assets/cats/gureum-sit.png").read_bytes() == b"\x89PNG new"
 
 
 # ---- Task 5: 업로드 ----
@@ -321,6 +393,7 @@ def test_publish_never_raises():
 
 def test_unchanged_publish_does_not_touch_disk():
     setup()
+    patch(UPLOAD_GAP=0)  # 업로드 간격 제한은 따로 테스트
     digest.get_token(111)
     runs = []
     subprocess.run = lambda cmd, **kw: runs.append(cmd) or Done(0)
@@ -334,6 +407,24 @@ def test_unchanged_publish_does_not_touch_disk():
     ])
     digest.publish(ENV)  # 바뀌면 새로 쓰고 업로드
     assert not marker.exists() and len(runs) == 2, runs
+
+
+def test_publish_waits_between_uploads():
+    setup()
+    digest.get_token(111)
+    runs = []
+    subprocess.run = lambda cmd, **kw: runs.append(cmd) or Done(0)
+    digest.publish(ENV)  # 첫 업로드
+    write_jsonl(digest.RATINGS_PATH, [
+        {"ts": "2026-10-12T09:00:00", "label": "good", "title": "👍 연타", "chat": 111},
+    ])
+    digest.publish(ENV)  # 방금 올렸음 → 데몬이 업로드에 붙잡히지 않게 건너뜀
+    assert len(runs) == 1, runs
+    state = json.loads(digest.STATE_PATH.read_text())
+    state["site_uploaded_at"] -= digest.UPLOAD_GAP + 1  # 시간이 흐른 셈
+    digest.STATE_PATH.write_text(json.dumps(state))
+    digest.publish(ENV)  # 간격이 지나면 밀린 변경을 올림
+    assert len(runs) == 2, runs
 
 
 def test_publish_keeps_newer_offset():
