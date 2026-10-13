@@ -536,7 +536,7 @@ def collect_feedback(env, timeout=0):
 • 기사 밑 [👍 관심] [👎 별로] 버튼이나 메시지 더블탭 👍 리액션으로 취향을 기록할 수 있어요.
 • 기사에 모르는 단어가 나오면, 그 기사 메시지에 '답장'으로 단어만 적어주세요. 초보용 설명을 만들어 보내드려요."""
                 if site_url(env):
-                    welcome += "\n• 🔖 저장 버튼으로 나중에 읽을 기사를 모아두면, 다이제스트 첫 메시지의 📚 내 저장함에서 볼 수 있어요."
+                    welcome += "\n• 🔖 저장 버튼으로 나중에 읽을 기사를 모아두면, 다이제스트 첫 메시지의 🏠 내 뉴스방에서 볼 수 있어요."
                 send_telegram(welcome, env, chat_id=cid)
                 print(f"[info] 신규 구독자: {cid}", file=sys.stderr)
             except Exception:
