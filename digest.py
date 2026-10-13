@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -1044,6 +1045,7 @@ def get_token(chat_id):
 
 SITE_DIR = Path(__file__).parent / "site"
 DIGEST_DAYS = 30  # 지난 다이제스트 탭에 보여줄 기간
+UPLOAD_GAP = 120  # 업로드 사이 최소 간격(초) — 👍 연타 때 데몬이 업로드(수십 초)에 계속 붙잡히지 않게
 
 
 def _http(link):
@@ -1172,6 +1174,8 @@ def publish(env, dry=False):
         state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
         if not dry and state.get("site_hash") == h:
             return  # 바뀐 게 없으면 site/도 안 건드림 — 데몬이 30초마다 부르므로
+        if not dry and time.time() - state.get("site_uploaded_at", 0) < UPLOAD_GAP:
+            return  # 방금 올렸으면 다음 루프로 미룸 — 그사이 바뀐 건 그때 한 번에 올라감
         build_site(pages)
         if dry:
             return
@@ -1203,6 +1207,7 @@ def publish(env, dry=False):
         # 업로드(최대 180초) 동안 데몬이 offset을 새로 썼을 수 있음 → 다시 읽고 site_hash만 바꿈
         state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
         state["site_hash"] = h
+        state["site_uploaded_at"] = time.time()
         STATE_PATH.write_text(json.dumps(state))
         print("[info] 저장함 업로드 완료", file=sys.stderr)
     except Exception as e:

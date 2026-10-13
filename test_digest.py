@@ -393,6 +393,7 @@ def test_publish_never_raises():
 
 def test_unchanged_publish_does_not_touch_disk():
     setup()
+    patch(UPLOAD_GAP=0)  # 업로드 간격 제한은 따로 테스트
     digest.get_token(111)
     runs = []
     subprocess.run = lambda cmd, **kw: runs.append(cmd) or Done(0)
@@ -406,6 +407,24 @@ def test_unchanged_publish_does_not_touch_disk():
     ])
     digest.publish(ENV)  # 바뀌면 새로 쓰고 업로드
     assert not marker.exists() and len(runs) == 2, runs
+
+
+def test_publish_waits_between_uploads():
+    setup()
+    digest.get_token(111)
+    runs = []
+    subprocess.run = lambda cmd, **kw: runs.append(cmd) or Done(0)
+    digest.publish(ENV)  # 첫 업로드
+    write_jsonl(digest.RATINGS_PATH, [
+        {"ts": "2026-10-12T09:00:00", "label": "good", "title": "👍 연타", "chat": 111},
+    ])
+    digest.publish(ENV)  # 방금 올렸음 → 데몬이 업로드에 붙잡히지 않게 건너뜀
+    assert len(runs) == 1, runs
+    state = json.loads(digest.STATE_PATH.read_text())
+    state["site_uploaded_at"] -= digest.UPLOAD_GAP + 1  # 시간이 흐른 셈
+    digest.STATE_PATH.write_text(json.dumps(state))
+    digest.publish(ENV)  # 간격이 지나면 밀린 변경을 올림
+    assert len(runs) == 2, runs
 
 
 def test_publish_keeps_newer_offset():

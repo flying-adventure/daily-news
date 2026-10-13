@@ -83,10 +83,12 @@ details.dg:first-of-type{margin-top:28px}
 footer{max-width:1040px;margin:0 auto;padding:0 24px 40px;display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;color:var(--dim)}
 footer button{padding:2px 5px;border:2px solid transparent;background:none;cursor:pointer}
 footer button.on{border-color:var(--accent)}
+footer .follow{display:none;padding:6px 10px;border-color:var(--line);font-family:var(--px)}
+.follow[hidden]{display:none!important}
 footer .sp{flex:1}
 
 /* 고양이 */
-#cat{position:fixed;left:0;top:0;width:60px;height:52px;z-index:30;cursor:pointer;--f:1}
+#cat{position:fixed;left:0;top:0;width:60px;height:52px;z-index:30;pointer-events:none;--f:1}
 #cat img{display:block;width:100%;height:100%;filter:drop-shadow(0 0 2px rgba(134,239,172,.35));transform:scaleX(var(--f));transform-origin:50% 100%}
 #cat.sleep img{animation:breathe 2.6s steps(2) infinite}
 @keyframes breathe{50%{transform:scaleX(var(--f)) scaleY(1.05)}}
@@ -110,6 +112,7 @@ footer .sp{flex:1}
   .tab[aria-selected=true]{border:0;background:var(--soft);box-shadow:inset 0 3px 0 var(--accent)}
   .head h2{font-size:20px}
   footer{padding:0 16px 104px}
+  footer .follow{display:inline-block}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -129,7 +132,7 @@ footer .sp{flex:1}
     <button class="tab" role="tab" data-tab="saved"><img class="ic" alt="" data-ic="saved"><span>저장함</span><b class="n"></b></button>
     <button class="tab" role="tab" data-tab="digest"><img class="ic" alt="" data-ic="digest"><span>지난 다이제스트</span><b class="n"></b></button>
     <button class="tab" role="tab" data-tab="liked"><img class="ic" alt="" data-ic="liked"><span>좋아요</span><b class="n"></b></button>
-    <div class="catbox">오늘의 냥이: <b id="catname"></b><br>지금: <b id="catst">자는 중</b><br><span id="cathint">커서를 움직이면 따라와요</span><br><button id="follow">따라오기 끄기</button></div>
+    <div class="catbox">오늘의 냥이: <b id="catname"></b><br>지금: <b id="catst">자는 중</b><br><span id="cathint">커서를 움직이면 따라와요</span><br><button class="follow">따라오기 끄기</button></div>
   </nav>
   <main id="main" role="tabpanel"></main>
 </div>
@@ -138,7 +141,7 @@ footer .sp{flex:1}
   <span id="pv" hidden>미리보기
   <button data-k="day">☀️</button><button data-k="sunset">🌇</button><button data-k="night">🌙</button><button data-k="rain">🌧</button>
   <span style="margin-left:14px">냥이</span><span id="catpick"></span></span>
-  <span class="sp"></span><span>나만 보는 비밀 페이지</span>
+  <button class="follow"></button><span class="sp"></span><span>나만 보는 비밀 페이지</span>
 </footer>
 
 <div id="cat" aria-hidden="true"><img alt=""><span class="bub"></span></div>
@@ -411,24 +414,27 @@ function tick(now){
 requestAnimationFrame(tick);
 if (!touch) addEventListener('mousemove', e => { mouse = {x: e.clientX, y: e.clientY}; }, {passive: true});
 document.documentElement.addEventListener('mouseleave', () => { mouse = null; });
-// 고양이를 누르면 하트
-catEl.addEventListener('click', e => {
-  e.stopPropagation(); wake();
-  const h = el('span', 'heart', '♥ ' + catName); h.style.left = cx + CW / 2 + 'px'; h.style.top = cy - 6 + 'px';
-  document.body.append(h); setTimeout(() => h.remove(), 900);
+// 고양이는 클릭을 가로채지 않음(밑의 기사가 그대로 눌림). 기사·버튼이 아닌 곳에서 고양이를 누르면 하트
+document.addEventListener('click', e => {
+  if (e.target.closest('a,button,summary')) return;
+  const r = catEl.getBoundingClientRect();
+  if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom){
+    wake();
+    const h = el('span', 'heart', '♥ ' + catName); h.style.left = cx + CW / 2 + 'px'; h.style.top = cy - 6 + 'px';
+    document.body.append(h); setTimeout(() => h.remove(), 900);
+  } else if (touch && following){
+    // 휴대폰: 빈 곳을 톡 치면 그쪽으로 달려옴
+    wander = {x: e.clientX - CW / 2, y: e.clientY - CH + 8, run: true}; nextWander = 9; wake();
+  }
 });
-// 휴대폰: 빈 곳을 톡 치면 그쪽으로 달려옴
-if (touch) document.addEventListener('click', e => {
-  if (!following || e.target.closest('a,button,summary')) return;
-  wander = {x: e.clientX - CW / 2, y: e.clientY - CH + 8, run: true}; nextWander = 9; wake();
-});
-const followBtn = document.getElementById('follow');
+// 따라오기 토글: PC는 왼쪽 상자, 휴대폰은 아래쪽(footer)에 있음
+const followBtns = document.querySelectorAll('.follow');
 document.getElementById('cathint').textContent = touch ? '화면을 톡 치면 달려와요' : '커서를 움직이면 따라와요';
-const followText = () => { followBtn.textContent = following ? '따라오기 끄기' : '따라오기 켜기'; };
+const followText = () => followBtns.forEach(b => { b.textContent = (touch ? '냥이 산책 ' : '따라오기 ') + (following ? '끄기' : '켜기'); });
 followText();
-// 따라오기 끄기/켜기는 이 브라우저에 기억
-followBtn.addEventListener('click', () => { following = !following; localStorage.setItem('catFollow', following ? 'on' : 'off'); followText(); });
-if (reduce) followBtn.hidden = true;
+// 끄기/켜기는 이 브라우저에 기억
+followBtns.forEach(b => b.addEventListener('click', () => { following = !following; localStorage.setItem('catFollow', following ? 'on' : 'off'); followText(); }));
+if (reduce) followBtns.forEach(b => { b.hidden = true; });
 </script>
 </body>
 </html>
