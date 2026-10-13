@@ -282,19 +282,30 @@ def test_room_data_drops_script_links():
 # ---- Task 4: 페이지 생성 ----
 
 
-def test_page_escapes_html_and_blocks_script_links():
+def page_data(html):
+    """뉴스방 페이지에 박힌 데이터 JSON을 꺼낸다."""
+    tag = '<script type="application/json" id="data">'
+    start = html.index(tag) + len(tag)
+    return json.loads(html[start:html.index("</script>", start)])
+
+
+def test_room_page_escapes_data_and_shares_assets():
     setup()
-    page = digest.render_page([
-        {"ts": "2026-10-12T09:00:00", "title": "<script>alert(1)</script>", "link": "javascript:alert(1)", "one": "a & b"},
-        {"ts": "2026-10-13T09:00:00", "title": "새 기사", "link": "https://ex.com/?a=1&b=2", "one": "요약"},
+    me = digest.get_token(111)
+    evil = "</script><script>alert(1)</script>"
+    write_jsonl(digest.RATINGS_PATH, [
+        {"ts": "2026-10-12T09:00:00", "label": "bookmark", "title": evil, "link": "https://ex.com/?a=1&b=2", "one": "a & b", "chat": 111},
     ])
-    assert "<script>" not in page and "&lt;script&gt;" in page
-    assert "javascript:" not in page
-    assert 'href="https://ex.com/?a=1&amp;b=2"' in page
-    assert "a &amp; b" in page
-    assert page.index("2026-10-13") < page.index("2026-10-12")  # 최신 날짜가 위
+    digest.build_site()
+    page = (digest.SITE_DIR / f"u/{me}/index.html").read_text()
+    assert "</script><script>alert" not in page  # 데이터가 script 태그를 탈출 못 함
+    [s] = page_data(page)["saved"]
+    assert (s["title"], s["link"], s["one"]) == (evil, "https://ex.com/?a=1&b=2", "a & b"), s
     assert '<meta name="robots" content="noindex">' in page
     assert '<meta name="referrer" content="no-referrer">' in page
+    assert 'src="../../assets/cat.js"' in page
+    assert (digest.SITE_DIR / "assets/cat.js").exists()
+    assert len(list((digest.SITE_DIR / "assets/cats").glob("*.png"))) == 24
 
 
 def test_build_site_one_private_page_per_person():
@@ -302,18 +313,30 @@ def test_build_site_one_private_page_per_person():
     me, friend = digest.get_token(111), digest.get_token(222)
     write_jsonl(digest.RATINGS_PATH, [
         {"ts": "2026-10-12T09:00:00", "label": "bookmark", "title": "내꺼", "link": "https://a", "one": "x", "chat": 111},
-        {"ts": "2026-10-12T09:00:00", "label": "good", "title": "좋아요만", "chat": 111},
     ])
     h1 = digest.build_site()
-    mine = (digest.SITE_DIR / f"u/{me}/index.html").read_text()
+    mine = page_data((digest.SITE_DIR / f"u/{me}/index.html").read_text())
     other = (digest.SITE_DIR / f"u/{friend}/index.html").read_text()
-    assert "내꺼" in mine and "좋아요만" not in mine
-    assert "내꺼" not in other and "아직 저장한 기사가 없어요" in other
+    assert [s["title"] for s in mine["saved"]] == ["내꺼"], mine
+    assert page_data(other)["saved"] == [] and "내꺼" not in other
+    assert "오스카" not in other  # 틀에 특정 사람 이름이 박혀 있지 않음
     assert (digest.SITE_DIR / "index.html").exists()
     assert digest.build_site() == h1  # 내용이 같으면 해시도 같음
     digest.TOKENS_PATH.write_text(json.dumps({"111": me}))  # 친구 토큰 폐기
     assert digest.build_site() != h1
     assert not (digest.SITE_DIR / f"u/{friend}").exists()  # 옛 주소 페이지는 사라짐
+
+
+def test_asset_change_changes_hash():
+    setup()
+    digest.get_token(111)
+    web = TMP / "web"
+    shutil.copytree(digest.WEB_DIR, web)
+    patch(WEB_DIR=web)
+    h1 = digest.build_site()
+    (web / "assets/cats/gureum-sit.png").write_bytes(b"\x89PNG new")  # 디자인 파일만 바뀜
+    assert digest.build_site() != h1  # → 재업로드 대상
+    assert (digest.SITE_DIR / "assets/cats/gureum-sit.png").read_bytes() == b"\x89PNG new"
 
 
 # ---- Task 5: 업로드 ----

@@ -1098,61 +1098,38 @@ def room_data(chat, env):
     }
 
 
-def page_html(title, body):
-    return f"""<!doctype html>
+WEB_DIR = Path(__file__).parent / "web"  # 뉴스방 틀(room.html)과 공용 자산(assets/)
+
+# 루트 주소 안내 페이지 (개인 페이지는 /u/<token>/)
+INDEX_HTML = """<!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <meta name="referrer" content="no-referrer">
-<title>{title}</title>
-<style>
-body{{font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;max-width:680px;margin:0 auto;padding:20px 16px;line-height:1.6;color:#1a1a1a;background:#fafafa}}
-h1{{font-size:1.4rem}}
-h2{{font-size:.85rem;color:#888;margin:28px 0 4px;font-weight:600}}
-article{{padding:12px 0;border-bottom:1px solid #e5e5e5}}
-h3{{font-size:1rem;margin:0 0 4px}}
-p{{margin:0;color:#555}}
-a{{color:#1a5fd0;text-decoration:none}}
-@media (prefers-color-scheme:dark){{body{{color:#e8e8e8;background:#121212}}article{{border-color:#2a2a2a}}p{{color:#aaa}}a{{color:#8ab4ff}}}}
-</style></head><body>
-<h1>{title}</h1>
-{body}
-</body></html>
+<title>뉴스방</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0e0d;color:#d9e6df;font-family:ui-monospace,monospace}b{color:#4ade80}</style>
+</head><body><p><b>$</b> 개인 뉴스방 주소는 텔레그램 봇이 보내드려요.</p></body></html>
 """
 
 
-def render_page(saves):
-    """저장 기록 목록 → 저장함 HTML. 최신 저장이 위, 날짜별로 묶음."""
-    import html
-
-    rows, day = [], None
-    for e in sorted(saves, key=lambda e: e["ts"], reverse=True):
-        if e["ts"][:10] != day:
-            day = e["ts"][:10]
-            rows.append(f"<h2>{day}</h2>")
-        title = html.escape(e["title"])
-        link = e.get("link", "")
-        # 제목·링크는 외부 RSS에서 온 값 — javascript: 주소가 우리 도메인에서 실행되지 않게 http(s)만 링크로
-        if link.startswith(("https://", "http://")):
-            title = f'<a href="{html.escape(link)}" target="_blank" rel="noopener noreferrer">{title}</a>'
-        rows.append(f"<article><h3>{title}</h3><p>{html.escape(e.get('one', ''))}</p></article>")
-    body = "\n".join(rows) or "<p>아직 저장한 기사가 없어요. 텔레그램에서 🔖 저장을 눌러보세요.</p>"
-    return page_html("📚 내 저장함", body)
+def room_html(data):
+    """뉴스방 틀에 한 사람 데이터를 넣는다. < 를 \\u003c로 바꿔 </script>로 태그를 탈출하지 못하게."""
+    blob = json.dumps(data, ensure_ascii=False).replace("<", "\\u003c")
+    return (WEB_DIR / "room.html").read_text().replace("__DATA__", blob)
 
 
-def site_pages():
-    """tokens.json의 모든 사람 저장함 페이지를 메모리에서 만든다. {상대경로: HTML}"""
+def site_pages(env=None):
+    """모든 사람의 뉴스방 페이지 + 공용 자산을 메모리에서 만든다. {상대경로: 내용(str 또는 bytes)}"""
+    env = load_env() if env is None else env
     tokens = json.loads(TOKENS_PATH.read_text()) if TOKENS_PATH.exists() else {}
-    saves = {}
-    if RATINGS_PATH.exists():
-        for line in RATINGS_PATH.read_text().splitlines():
-            e = json.loads(line)
-            if e.get("label") == "bookmark":
-                saves.setdefault(str(e.get("chat")), []).append(e)
-    pages = {"index.html": page_html("daily-news", "<p>개인 저장함 주소는 텔레그램 봇이 보내드려요.</p>")}
+    pages = {"index.html": INDEX_HTML}
+    assets = WEB_DIR / "assets"
+    for p in sorted(assets.rglob("*")):
+        if p.is_file() and not p.name.startswith("."):  # .DS_Store 같은 숨김 파일 제외
+            pages["assets/" + p.relative_to(assets).as_posix()] = p.read_bytes()
     for chat, token in tokens.items():
-        pages[f"u/{token}/index.html"] = render_page(saves.get(chat, []))
+        pages[f"u/{token}/index.html"] = room_html(room_data(chat, env))
     return pages
 
 
@@ -1162,7 +1139,7 @@ def site_hash(pages):
 
     h = hashlib.sha256()
     for rel, content in sorted(pages.items()):
-        h.update(rel.encode() + content.encode())
+        h.update(rel.encode() + (content if isinstance(content, bytes) else content.encode()))
     return h.hexdigest()
 
 
@@ -1175,7 +1152,10 @@ def build_site(pages=None):
     for rel, content in pages.items():
         path = SITE_DIR / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content)
     return site_hash(pages)
 
 
@@ -1187,7 +1167,7 @@ def publish(env, dry=False):
     try:
         if dry and env.get("TELEGRAM_CHAT_ID"):
             get_token(env["TELEGRAM_CHAT_ID"])  # 미리보기용 본인 페이지
-        pages = site_pages()
+        pages = site_pages(env)
         h = site_hash(pages)
         state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
         if not dry and state.get("site_hash") == h:
