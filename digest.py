@@ -103,7 +103,8 @@ def ensure_model():
     if MODEL not in ps:
         subprocess.run([LMS, "server", "start"], capture_output=True)
         subprocess.run(
-            [LMS, "load", MODEL, "-y", "--context-length", "16384"],
+            # 30분 안 쓰면 메모리(17GB)에서 자동으로 내림 — 다음에 필요하면 이 함수가 다시 올림
+            [LMS, "load", MODEL, "-y", "--context-length", "16384", "--ttl", "1800"],
             capture_output=True,
             timeout=300,
         )
